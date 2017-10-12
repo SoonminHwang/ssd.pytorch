@@ -42,7 +42,7 @@ parser.add_argument('--confidence_threshold', default=0.01, type=float,
                     help='Detection confidence threshold')
 parser.add_argument('--top_k', default=5, type=int,
                     help='Further restrict the number of predictions to parse')
-parser.add_argument('--cuda', default=True, type=str2bool,
+parser.add_argument('--cuda', default=True, action='store_true',
                     help='Use cuda to train model')
 parser.add_argument('--voc_root', default=VOCroot, help='Location of VOC root directory')
 
@@ -56,13 +56,20 @@ if args.cuda and torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
-imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
-imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
-YEAR = '2007'
+# annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
+# imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
+# imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
+# YEAR = '2007'
+
+OUTPUT_PATH = 'outputs/ssd300_voc07_85k_to_12_5k'
+annopath = os.path.join(args.voc_root, 'VOC2012', 'Annotations', '%s.xml')
+imgpath = os.path.join(args.voc_root, 'VOC2012', 'JPEGImages', '%s.jpg')
+imgsetpath = os.path.join(args.voc_root, 'VOC2012', 'ImageSets', 'Main', '{:s}.txt')
+YEAR = '2012'
 devkit_path = VOCroot + 'VOC' + YEAR
 dataset_mean = (104, 117, 123)
-set_type = 'test'
+# set_type = 'test'
+set_type = 'val'
 
 class Timer(object):
     """A simple timer."""
@@ -361,7 +368,7 @@ def test_net(save_folder, net, cuda, dataset, transform, top_k,
 
     # timers
     _t = {'im_detect': Timer(), 'misc': Timer()}
-    output_dir = get_output_dir('ssd300_120000', set_type)
+    output_dir = get_output_dir(OUTPUT_PATH, set_type)
     det_file = os.path.join(output_dir, 'detections.pkl')
 
     for i in range(num_images):
@@ -372,7 +379,7 @@ def test_net(save_folder, net, cuda, dataset, transform, top_k,
             x = x.cuda()
         _t['im_detect'].tic()
         detections = net(x).data
-        detect_time = _t['im_detect'].toc(average=False)
+        detect_time = _t['im_detect'].toc(average=True)
 
         # skip j = 0, because it's the background class
         for j in range(1, detections.size(1)):
@@ -414,7 +421,7 @@ if __name__ == '__main__':
     net.eval()
     print('Finished loading model!')
     # load data
-    dataset = VOCDetection(args.voc_root, [('2007', set_type)], BaseTransform(300, dataset_mean), AnnotationTransform())
+    dataset = VOCDetection(args.voc_root, [(YEAR, set_type)], BaseTransform(300, dataset_mean), AnnotationTransform())
     if args.cuda:
         net = net.cuda()
         cudnn.benchmark = True

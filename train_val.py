@@ -7,7 +7,7 @@ import torch.nn.init as init
 import argparse
 from torch.autograd import Variable
 import torch.utils.data as data
-from data import v2, v1, AnnotationTransform, VOCDetection, detection_collate, VOCroot, VOC_CLASSES
+from data import v2, v1, AnnotationTransform, VOCDetection, BaseTransform, detection_collate, VOCroot, VOC_CLASSES
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
 from ssd import build_ssd
@@ -17,6 +17,11 @@ import time
 import utils.logutil as logutil
 from datetime import datetime
 import shutil
+
+from data import VOC_CLASSES as labelmap
+from data import VOCroot
+
+from eval import voc_eval, Timer
 
 import ipdb
 
@@ -79,10 +84,17 @@ else:
 cfg = (v1, v2)[args.version == 'v2']
 
 
-# train_sets = [('2007', 'trainval'), ('2012', 'trainval')]
+train_sets = [('2007', 'trainval'), ('2012', 'trainval')]
 # train_sets = [('2007', 'trainval')]
 # train_sets = [('2012', 'trainval')]
-train_sets = [('2012', 'train')]
+# train_sets = [('2012', 'train')]
+val_sets = [('2007', 'test')]
+
+annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
+imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
+imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
+
+
 # train_sets = 'train'
 ssd_dim = 300  # only support 300 now
 means = (104, 117, 123)  # only support voc now
@@ -140,13 +152,111 @@ optimizer = optim.SGD(net.parameters(), lr=args.lr,
 criterion = MultiBoxLoss(num_classes, 0.5, True, 0, True, 3, 0.5, False, args.cuda)
 
 
-def train():
+
+def write_voc_results_file(all_boxes, dataset):
+    for cls_ind, cls in enumerate(labelmap):
+        print('Writing {:s} VOC results file'.format(cls))
+        # filename = get_voc_results_file_template('test', cls)
+        filename = 'tmp/det_test_%s.txt' % (cls)
+        with open(filename, 'wt') as f:
+            for im_ind, index in enumerate(dataset.ids):
+                dets = all_boxes[cls_ind+1][im_ind]
+                if dets == []:
+                    continue
+                # the VOCdevkit expects 1-based indices
+                for k in range(dets.shape[0]):
+                    f.write('{:s} {:.3f} {:.1f} {:.1f} {:.1f} {:.1f}\n'.
+                            format(index[1], dets[k, -1],
+                                   dets[k, 0] + 1, dets[k, 1] + 1,
+                                   dets[k, 2] + 1, dets[k, 3] + 1))
+
+def do_python_eval(use_07=True):
+    devkit_path = VOCroot + 'VOC2007'
+    cachedir = os.path.join(devkit_path, 'annotations_cache')
+    aps = []
+    # The PASCAL VOC metric changed in 2010
+    use_07_metric = use_07    
+    if not os.path.isdir(output_dir):
+        os.mkdir(output_dir)
+    for i, cls in enumerate(labelmap):
+        filename = 'tmp/det_test_%s.txt' % (cls)
+        rec, prec, ap = voc_eval(
+           filename, annopath, imgsetpath.format('test'), cls, cachedir,
+           ovthresh=0.5, use_07_metric=use_07_metric)
+        aps += [ap]
+        # print('AP for {} = {:.4f}'.format(cls, ap))
+        # with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
+        #     pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
+
+    return np.mean(aps)
+    
+
+def validation( net, loader, dataset ):
+
+    net.eval()    
+    # timers
+    _t = {'im_detect': Timer(), 'misc': Timer()}
+
+    num_images = len(loader)
+    # all detections are collected into:
+    #    all_boxes[cls][image] = N x 5 array of detections in
+    #    (x1, y1, x2, y2, score)
+    all_boxes = [[[] for _ in range(num_images)]
+                 for _ in range(len(labelmap)+1)]
+
+    for i, (images, targets, heights, widths) in enumerate(loader):
+        if args.cuda:
+            images = Variable(images.cuda())
+            # targets = [Variable(anno.cuda(), volatile=True) for anno in targets]
+        else:
+            images = Variable(images)
+            # targets = [Variable(anno, volatile=True) for anno in targets]        
+
+        h = heights[0]
+        w = widths[0]
+
+        _t['im_detect'].tic()
+        detections = net(images)[0].data
+        detect_time = _t['im_detect'].toc(average=True)
+
+        # skip j = 0, because it's the background class
+        for j in range(1, detections.size(1)):
+            dets = detections[0, j, :]
+            mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
+            dets = torch.masked_select(dets, mask).view(-1, 5)
+            if dets.dim() == 0:
+                continue
+            boxes = dets[:, 1:]
+            boxes[:, 0] *= w
+            boxes[:, 2] *= w
+            boxes[:, 1] *= h
+            boxes[:, 3] *= h
+            scores = dets[:, 0].cpu().numpy()
+            cls_dets = np.hstack((boxes.cpu().numpy(), scores[:, np.newaxis])) \
+                .astype(np.float32, copy=False)
+            all_boxes[j][i] = cls_dets
+
+        print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
+                                                    num_images, detect_time))
+
+    net.train()    
+
+    write_voc_results_file(all_boxes, dataset)
+
+    return do_python_eval()
+
+def trainval():
     net.train()
     # loss counters
     loc_loss = 0  # epoch
     conf_loss = 0
     epoch = 0
     print('Loading Dataset...')
+
+    dataset_test = VOCDetection(args.voc_root, val_sets, BaseTransform(300, means), AnnotationTransform())
+    test_loader = torch.utils.data.DataLoader(dataset=dataset_test,
+                                   batch_size=1, 
+                                   shuffle=False, num_workers=4)
 
     dataset = VOCDetection(args.voc_root, train_sets, SSDAugmentation(
         ssd_dim, means), AnnotationTransform())
@@ -176,13 +286,50 @@ def train():
                 legend=['Loc Loss', 'Conf Loss', 'Loss']
             )
         )
+
+        epoch_map = viz.line(
+            X=torch.zeros((1,)).cpu(),
+            Y=torch.zeros((1,)).cpu(),
+            opts=dict(
+                xlabel='Epoch',
+                ylabel='mAP',
+                title='mAP of trained model',
+                legend=['test mAP']
+            )
+        )
+
     batch_iterator = None
     data_loader = data.DataLoader(dataset, batch_size, num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate, pin_memory=True)
     for iteration in range(args.start_iter, max_iter):
         if (not batch_iterator) or (iteration % epoch_size == 0):
+
+            if epoch >= 10:
+                # New epoch, validation
+                ssd_net.set_phase('test')
+                mAP = validation( net, test_loader, dataset_test )
+                ssd_net.set_phase('train')
+
+                viz.line(
+                    X=torch.Tensor([epoch]).cpu(),
+                    Y=torch.Tensor([mAP]).cpu(),
+                    win=epoch_map,
+                    update=True
+                )
+
+                if mAP > best_mAP:
+                    print('Best mAP = {:.4f}'.format(mAP))
+                    best_mAP = mAP
+
+                    filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_iter_{:07d}_mAP_{:.2f}.pth'.format(iteration, mAP))
+                    print('Saving state, {:s}'.format(filename))
+                    torch.save(ssd_net.state_dict(), filename)
+
             # create batch iterator
             batch_iterator = iter(data_loader)
+
+
+
         if iteration in stepvalues:
             step_index += 1
             adjust_learning_rate(optimizer, args.gamma, step_index)
@@ -200,7 +347,8 @@ def train():
             epoch += 1
 
         # load train data
-        images, targets = next(batch_iterator)
+        # images, targets = next(batch_iterator)
+        images, targets, _, _ = next(batch_iterator)
 
         if args.cuda:
             images = Variable(images.cuda())
@@ -210,7 +358,11 @@ def train():
             targets = [Variable(anno, volatile=True) for anno in targets]
         # forward
         t0 = time.time()
-        out = net(images)
+        # out = net(images)
+        out, sources = net(images)
+
+        # for src in sources:
+
         # backprop
         optimizer.zero_grad()
         loss_l, loss_c = criterion(out, targets)
@@ -248,10 +400,10 @@ def train():
                     win=epoch_lot,
                     update=True
                 )
-        if iteration % 5000 == 0:
-            filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_iter_{:07d}.pth'.format(iteration))
-            print('Saving state, {:s}'.format(filename))
-            torch.save(ssd_net.state_dict(), filename)
+        # if iteration % 5000 == 0:
+        #     filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_iter_{:07d}.pth'.format(iteration))
+        #     print('Saving state, {:s}'.format(filename))
+        #     torch.save(ssd_net.state_dict(), filename)
     
     torch.save(ssd_net.state_dict(), 'weights/{:s}_final.pth'.format(args.exp_name))
 
@@ -267,4 +419,4 @@ def adjust_learning_rate(optimizer, gamma, step):
 
 
 if __name__ == '__main__':
-    train()
+    trainval()
