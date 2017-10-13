@@ -20,6 +20,14 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
+# gets home dir cross platform
+# home = os.path.expanduser("~")
+# ddir = os.path.join(home,"data/VOCdevkit/")
+ddir = os.path.join('data', 'VOCdevkit')
+# note: if you used our download scripts, this should be right
+VOCroot = ddir # path to VOCdevkit root dir
+
+
 VOC_CLASSES = (  # always index 0
     'aeroplane', 'bicycle', 'bird', 'boat',
     'bottle', 'bus', 'car', 'cat', 'chair',

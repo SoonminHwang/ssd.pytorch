@@ -5,6 +5,8 @@ from torch.autograd import Variable
 from data import v2 as cfg
 from ..box_utils import match, log_sum_exp
 
+import ipdb
+
 class MultiBoxLoss(nn.Module):
     """SSD Weighted Loss Function
     Compute Targets:
@@ -81,7 +83,7 @@ class MultiBoxLoss(nn.Module):
         num_pos = pos.sum(keepdim=True)
 
         # Localization Loss (Smooth L1)
-        # Shape: [batch,num_priors,4]
+        # Shape: [batch,num_priors,4]        
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
@@ -113,4 +115,5 @@ class MultiBoxLoss(nn.Module):
         N = num_pos.data.sum()
         loss_l /= N
         loss_c /= N
+
         return loss_l, loss_c

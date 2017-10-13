@@ -19,8 +19,17 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
-KAIST_CLASSES = (  # always index 0
-    'cyclist', 'person', 'people', 'person?')
+import ipdb
+
+
+DBroot = os.path.join('data', 'kaist-rgbt')
+
+
+
+# KAIST_CLASSES = (  # always index 0
+#     'cyclist', 'person', 'people', 'person?')
+KAIST_CLASSES = {  # always index 0
+    'cyclist':0, 'person':0, 'people':-1, 'person?':-1}
 
 # for making bounding boxes pretty
 COLORS = ((255, 0, 0, 128), (0, 255, 0, 128), (0, 0, 255, 128),
@@ -28,8 +37,8 @@ COLORS = ((255, 0, 0, 128), (0, 255, 0, 128), (0, 0, 255, 128),
 
 # [vRng] 0: non-occlusion, 1: partial, 2: heavy
 LOAD_CONDITIONS = {
-    'Reasonable': {'hRng': (45, inf), 'vRng': (0, 1) 'xRng':(5, 635), 'yRng':(5, 475)},
-    'Near': {'hRng': (115, inf), 'vRng': (0) 'xRng':(5, 635), 'yRng':(5, 475)}
+    'Reasonable': {'hRng': (45, np.inf), 'vRng': (0, 1), 'xRng':(5, 635), 'yRng':(5, 475)},
+    'Near': {'hRng': (115, np.inf), 'vRng': (0), 'xRng':(5, 635), 'yRng':(5, 475)}
 }
 
 class AnnotationTransform(object):
@@ -45,8 +54,9 @@ class AnnotationTransform(object):
     """
 
     def __init__(self, class_to_ind=None, keep_difficult=False):
-        self.class_to_ind = class_to_ind or dict(
-            zip(KAIST_CLASSES, range(len(KAIST_CLASSES))))
+        # self.class_to_ind = class_to_ind or dict(
+        #     zip(KAIST_CLASSES, range(len(KAIST_CLASSES))))
+        self.class_to_ind = class_to_ind or KAIST_CLASSES
         self.keep_difficult = keep_difficult
 
     def __call__(self, target, width, height):
@@ -62,13 +72,14 @@ class AnnotationTransform(object):
             difficult = int(obj.find('difficult').text) == 1
             if not self.keep_difficult and difficult:
                 continue
-            name = obj.find('name').text.lower().strip()
+            name = obj.find('name').text.lower().strip()            
             bbox = obj.find('bndbox')
 
             pts = ['xmin', 'ymin', 'xmax', 'ymax']
             bndbox = []
             for i, pt in enumerate(pts):
-                cur_pt = int(bbox.find(pt).text) - 1
+                # cur_pt = int(bbox.find(pt).text) - 1
+                cur_pt = float(bbox.find(pt).text) - 1
                 # scale height or width
                 cur_pt = cur_pt / width if i % 2 == 0 else cur_pt / height
                 bndbox.append(cur_pt)
@@ -115,8 +126,9 @@ class KAISTDetection(data.Dataset):
         # {SET_ID}/{VID_ID}/{MODALITY}/{IMG_ID}.jpg
         self._imgpath = os.path.join('%s', 'images', '%s', '%s', '%s', '%s.jpg')  
         self.ids = list()
-        for (skip, name) in image_sets:            
-            for line in open(os.path.join(self.root, 'imageSets', '{:s}{:02d}.txt'.format(name, skip))):
+
+        for (skip, name) in image_sets:
+            for line in open(os.path.join(self.root, 'imageSets', '{:s}{:02d}.txt'.format(name, int(skip)))):
                 self.ids.append((self.root, line.strip().split('/')))
 
     def __getitem__(self, index):
@@ -127,11 +139,12 @@ class KAISTDetection(data.Dataset):
         return len(self.ids)
 
     def pull_item(self, index):
-        img_id = self.ids[index]
-        target = ET.parse(self._annopath % img_id).getroot()
-
-        vis = cv2.imread(self._imgpath % ( img_id[:-1], 'visible', img_id[-1] ), cv2.IMREAD_COLOR )
-        lwir = cv2.imread(self._imgpath % ( img_id[:-1], 'lwir', img_id[-1] ), cv2.IMREAD_GRAY )
+        frame_id = self.ids[index]
+        target = ET.parse(self._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
+        
+        set_id, vid_id, img_id = frame_id[-1]
+        vis = cv2.imread(self._imgpath % ( *frame_id[:-1], set_id, vid_id, 'visible', img_id ), cv2.IMREAD_COLOR )
+        lwir = cv2.imread(self._imgpath % ( *frame_id[:-1], set_id, vid_id, 'lwir', img_id ), cv2.IMREAD_COLOR )
         
         assert vis.shape[:2] == lwir.shape[:2]
 
@@ -143,31 +156,24 @@ class KAISTDetection(data.Dataset):
 
         if self.transform is not None:
             target = np.array(target)
+
+            if len(target) == 0:
+                target = np.array([[-0.01, -0.01, -0.01, -0.01, -1]], dtype=np.float)
+
             vis, boxes, labels = self.transform(vis, target[:, :4], target[:, 4])
             lwir, _, _ = self.transform(lwir, target[:, :4], target[:, 4])
             # to rgb
             vis = vis[:, :, (2, 1, 0)]
+            lwir = lwir[:, :, :1]
             # img = img.transpose(2, 0, 1)
             target = np.hstack((boxes, np.expand_dims(labels, axis=1)))
+            # target = target[:, np.where(labels != -1)[0]]
+            target[np.where(labels == -1)[0], :-1] = 0.0
 
         return torch.from_numpy(vis).permute(2, 0, 1), torch.from_numpy(lwir).permute(2, 0, 1), target, height, width
-        # return torch.from_numpy(img).permute(2, 0, 1), target, height, width
-
-        # img = cv2.imread(self._imgpath % img_id)
-        # height, width, channels = img.shape
-
-        # if self.target_transform is not None:
-        #     target = self.target_transform(target, width, height)
-
-        # if self.transform is not None:
-        #     target = np.array(target)
-        #     img, boxes, labels = self.transform(img, target[:, :4], target[:, 4])
-        #     # to rgb
-        #     img = img[:, :, (2, 1, 0)]
-        #     # img = img.transpose(2, 0, 1)
-        #     target = np.hstack((boxes, np.expand_dims(labels, axis=1)))
-        # return torch.from_numpy(img).permute(2, 0, 1), target, height, width
-        # return torch.from_numpy(img), target, height, width
+        # lwir = lwir[:,:,np.newaxis]
+        # return torch.from_numpy(vis).permute(2, 0, 1), torch.from_numpy(lwir).permute(2, 0, 1), target, height, width
+        
 
     def pull_image(self, index):
         '''Returns the original image object at index in PIL form
@@ -178,11 +184,12 @@ class KAISTDetection(data.Dataset):
         Return:
             PIL img
         '''
-        img_id = self.ids[index]
-
-        vis = cv2.imread(self._imgpath % ( img_id[:-1], 'visible', img_id[-1] ) )
-        lwir = cv2.imread(self._imgpath % ( img_id[:-1], 'lwir', img_id[-1] ) )
+        frame_id = self.ids[index]
+        set_id, vid_id, img_id = frame_id[-1]
         
+        vis = cv2.imread(self._imgpath % ( *frame_id[:-1], set_id, vid_id, 'visible', img_id ), cv2.IMREAD_COLOR )
+        lwir = cv2.imread(self._imgpath % ( *frame_id[:-1], set_id, vid_id, 'lwir', img_id ), cv2.IMREAD_GRAYSCALE )
+
         return vis, lwir
 
     def pull_anno(self, index):
@@ -195,10 +202,13 @@ class KAISTDetection(data.Dataset):
             list:  [img_id, [(label, bbox coords),...]]
                 eg: ('001718', [('dog', (96, 13, 438, 332))])
         '''
-        img_id = self.ids[index]
-        anno = ET.parse(self._annopath % img_id).getroot()
+        # img_id = self.ids[index]
+        # anno = ET.parse(self._annopath % img_id).getroot()
+        frame_id = self.ids[index]
+        anno = ET.parse(self._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
+
         gt = self.target_transform(anno, 1, 1)
-        return img_id[1], gt
+        return frame_id, gt, anno
 
     def pull_tensor(self, index):
         '''Returns the original image at an index in tensor form
@@ -235,4 +245,5 @@ def detection_collate(batch):
         targets.append(torch.FloatTensor(sample[2]))
         heights.append(sample[3])
         widths.append(sample[4])
-return torch.stack(vis, 0), torch.stack(lwir, 0), targets, heights, widths
+    
+    return torch.stack(vis, 0), torch.stack(lwir, 0), targets, heights, widths

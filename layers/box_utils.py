@@ -62,7 +62,7 @@ def jaccard(box_a, box_b):
               (box_a[:, 3]-box_a[:, 1])).unsqueeze(1).expand_as(inter)  # [A,B]
     area_b = ((box_b[:, 2]-box_b[:, 0]) *
               (box_b[:, 3]-box_b[:, 1])).unsqueeze(0).expand_as(inter)  # [A,B]
-    union = area_a + area_b - inter
+    union = area_a + area_b - inter    
     return inter / union  # [A,B]
 
 
@@ -87,7 +87,7 @@ def match(threshold, truths, priors, variances, labels, loc_t, conf_t, idx):
     overlaps = jaccard(
         truths,
         point_form(priors)
-    )
+    )    
     # (Bipartite Matching)
     # [1,num_objects] best prior for each ground truth
     best_prior_overlap, best_prior_idx = overlaps.max(1, keepdim=True)

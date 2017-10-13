@@ -81,7 +81,8 @@ class SubtractMeans(object):
 
 class ToAbsoluteCoords(object):
     def __call__(self, image, boxes=None, labels=None):
-        height, width, channels = image.shape
+        # height, width, channels = image.shape
+        height, width = image.shape[:2]
         boxes[:, 0] *= width
         boxes[:, 2] *= width
         boxes[:, 1] *= height
@@ -92,7 +93,8 @@ class ToAbsoluteCoords(object):
 
 class ToPercentCoords(object):
     def __call__(self, image, boxes=None, labels=None):
-        height, width, channels = image.shape
+        # height, width, channels = image.shape
+        height, width = image.shape[:2]        
         boxes[:, 0] /= width
         boxes[:, 2] /= width
         boxes[:, 1] /= height

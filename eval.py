@@ -9,12 +9,14 @@ import torch
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torchvision.transforms as transforms
-from torch.autograd import Variable
-from data import VOCroot
-from data import VOC_CLASSES as labelmap
 import torch.utils.data as data
+from torch.autograd import Variable
 
-from data import AnnotationTransform, VOCDetection, BaseTransform, VOC_CLASSES
+from data.voc0712 import VOCroot
+from data.voc0712 import VOC_CLASSES as labelmap
+from data.voc0712 import AnnotationTransform, VOCDetection, VOC_CLASSES
+from data import BaseTransform
+
 from ssd import build_ssd
 
 import sys
