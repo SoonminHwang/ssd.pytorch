@@ -6,6 +6,7 @@ from layers import *
 from data import v2
 import os
 
+import ipdb
 
 class SSD(nn.Module):
     """Single Shot Multibox Architecture
@@ -87,14 +88,17 @@ class SSD(nn.Module):
 
         # apply vgg up to conv4_3 relu
         # for k in range(23):
-        for k in range(self.merge_point, 23):
+        # for k in range(self.merge_point, 23):
+        for k in range(self.merge_point, 33):
             x = self.vgg[k](x)
 
         s = self.L2Norm(x)
+        # s = x
         sources.append(s)
 
         # apply vgg up to fc7
-        for k in range(23, len(self.vgg)):
+        # for k in range(23, len(self.vgg)):
+        for k in range(33, len(self.vgg)):
             x = self.vgg[k](x)
         sources.append(x)
 
@@ -105,7 +109,7 @@ class SSD(nn.Module):
                 sources.append(x)
 
         # apply multibox head to source layers
-        for (x, l, c) in zip(sources, self.loc, self.conf):
+        for (x, l, c) in zip(sources, self.loc, self.conf):                    
             loc.append(l(x).permute(0, 2, 3, 1).contiguous())
             conf.append(c(x).permute(0, 2, 3, 1).contiguous())
 
@@ -139,7 +143,7 @@ class SSD(nn.Module):
 
 # This function is derived from torchvision VGG make_layers()
 # https://github.com/pytorch/vision/blob/master/torchvision/models/vgg.py
-def vgg(cfg, i, batch_norm=False, simple=False):
+def vgg(cfg, i, batch_norm=True, simple=False):
     layers = []
     in_channels = i
     for v in cfg:
@@ -164,7 +168,7 @@ def vgg(cfg, i, batch_norm=False, simple=False):
     return layers
 
 
-def add_extras(cfg, i, batch_norm=False):
+def add_extras(cfg, i, batch_norm=True):
     # Extra layers added to VGG for feature scaling
     layers = []
     in_channels = i

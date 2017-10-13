@@ -38,13 +38,13 @@ parser.add_argument('--version',            default='v2', help='conv11_2(v2) or 
 parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
 # parser.add_argument('--basenet',            default='weights/vgg16_bn-6c64b313.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',         default=64, type=int, help='Batch size for training')
+parser.add_argument('--batch_size',         default=32, type=int, help='Batch size for training')
 parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
 parser.add_argument('--start_iter',         default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
 parser.add_argument('--cuda',               default=True, action='store_true', help='Use cuda to train model')
-parser.add_argument('--lr',                 default=1e-4, type=float, help='initial learning rate')
+parser.add_argument('--lr',                 default=1e-3, type=float, help='initial learning rate')
 parser.add_argument('--momentum',           default=0.9, type=float, help='momentum')
 parser.add_argument('--weight_decay',       default=5e-4, type=float, help='Weight decay for SGD')
 parser.add_argument('--gamma',              default=0.1, type=float, help='Gamma update for SGD')
@@ -70,7 +70,7 @@ if not os.path.exists(snapshot_dir):        os.makedirs(snapshot_dir)
 
 ### Backup important files
 shutil.copy2( __file__, jobs_dir+'/' )
-shutil.copy2( 'ssd.py', jobs_dir+'/' )
+shutil.copy2( 'ssd_kaist.py', jobs_dir+'/' )
 shutil.copy2( 'layers/modules/multibox_loss.py', jobs_dir+'/' )
 
 ### Logging experiment settings   
@@ -94,10 +94,8 @@ else:
 cfg = (v1, v2)[args.version == 'v2']
 
 
-train_sets = [('04', 'train')]
-# train_sets = [('2007', 'trainval')]
-# train_sets = [('2012', 'trainval')]
-# train_sets = [('2012', 'train')]
+# train_sets = [('04', 'train')]
+train_sets = [('20', 'train')]
 val_sets = [('20', 'test')]
 
 # annopath = os.path.join(args.db_root, 'VOC2007', 'Annotations', '%s.xml')
@@ -126,8 +124,8 @@ ssd_net = build_ssd('train', ssd_dim, num_classes)
 net = ssd_net
 
 if args.cuda:
-    net = torch.nn.DataParallel(ssd_net)
-    # net = ssd_net
+    # net = torch.nn.DataParallel(ssd_net)
+    net = ssd_net
     cudnn.benchmark = True
 
 if args.resume:
@@ -136,7 +134,7 @@ if args.resume:
 else:
     vgg_weights = torch.load(args.basenet)    
     print('Loading base network...')
-    ssd_net.vgg.load_state_dict(vgg_weights)
+    # ssd_net.vgg.load_state_dict(vgg_weights)
 
     # # Initialize additional tower for lwir
     # loaded_state = OrderedDict()
@@ -155,7 +153,19 @@ if args.cuda:
 
 
 def weights_init(m):
+    # if isinstance(m, nn.Conv2d):
+    #     init.xavier_uniform(m.weight.data)
+    #     m.bias.data.zero_()
     if isinstance(m, nn.Conv2d):
+        # n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
+        # m.weight.data.normal_(0, math.sqrt(2. / n))
+        init.xavier_uniform(m.weight.data)
+        m.bias.data.zero_()
+    elif isinstance(m, nn.BatchNorm2d):
+        m.weight.data.fill_(1)
+        m.bias.data.zero_()
+    elif isinstance(m, nn.Linear):
+        # m.weight.data.normal_(0, 0.01)
         init.xavier_uniform(m.weight.data)
         m.bias.data.zero_()
 
@@ -168,6 +178,7 @@ if not args.resume:
     ssd_net.conf.apply(weights_init)
 
     ssd_net.lwir.apply(weights_init)
+    ssd_net.vgg.apply(weights_init)
 
 # optimizer = optim.SGD(net.parameters(), lr=args.lr,
 #                       momentum=args.momentum, weight_decay=args.weight_decay)
@@ -348,30 +359,68 @@ def trainval():
         #     import xml.etree.cElementTree as ET
         # else:
         #     import xml.etree.ElementTree as ET
-        
-        # target_transform = AnnotationTransform()
+                
         # for ii in range(len(dataset_train.ids)):
         #     frame_id = dataset_train.ids[ii]
-        #     target = ET.parse(dataset_train._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
-            
-        #     set_id, vid_id, img_id = frame_id[-1]
-        #     vis = cv2.imread(dataset_train._imgpath % ( *frame_id[:-1], set_id, vid_id, 'visible', img_id ), cv2.IMREAD_COLOR )
-        #     # lwir = cv2.imread(dataset_train._imgpath % ( *frame_id[:-1], set_id, vid_id, 'lwir', img_id ), cv2.IMREAD_COLOR )
-            
-        #     # target = ET.parse(dataset_train._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
-        #     height, width, channels = vis.shape                                           
-        #     target = target_transform(target, width, height)
 
-        #     target = np.array(target)
+        #     blob = dataset_train.pull_item(ii)
 
-        #     if len(target) == 0:
-        #         target = np.array([[1, 1, 1, 1, -1]], dtype=np.float)
+        #     ipdb.set_trace()
 
-        #     vis, boxes, labels = dataset_train.transform(vis, target[:, :4], target[:, 4])
+        # try:
+        #     target_transform = AnnotationTransform()
+        #     for ii in range(len(dataset_train.ids)):
+        #         frame_id = dataset_train.ids[ii]
+        #         target = ET.parse(dataset_train._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
+                
+        #         set_id, vid_id, img_id = frame_id[-1]
+        #         vis = cv2.imread(dataset_train._imgpath % ( *frame_id[:-1], set_id, vid_id, 'visible', img_id ), cv2.IMREAD_COLOR )
+        #         lwir = cv2.imread(dataset_train._imgpath % ( *frame_id[:-1], set_id, vid_id, 'lwir', img_id ), cv2.IMREAD_COLOR )
+                
+        #         # target = ET.parse(dataset_train._annopath % ( *frame_id[:-1], *frame_id[-1] ) ).getroot()
+        #         height, width, channels = vis.shape                                           
+        #         target = target_transform(target, width, height)
+
+        #         target = np.array(target)
+
+        #         if len(target) == 0:
+        #             target = np.array([[-0.01, -0.01, -0.01, -0.01, -1]], dtype=np.float)
+        #         else:
+        #             valid = np.zeros( (len(target), 1) )
+        #             for ii, bb in enumerate(target):
+        #                 x1, y1, x2, y2, lbl, occ = bb
+        #                 x1, y1, x2, y2 = x1*width, y1*height, x2*width, y2*height
+        #                 w = x2 - x1 + 1
+        #                 h = y2 - y1 + 1
+
+        #                 if occ in dataset_train.cond['vRng'] and \
+        #                     x1 >= dataset_train.cond['xRng'][0] and \
+        #                     x2 >= dataset_train.cond['xRng'][0] and \
+        #                     x1 <= dataset_train.cond['xRng'][1] and \
+        #                     x2 <= dataset_train.cond['xRng'][1] and \
+        #                     y1 >= dataset_train.cond['yRng'][0] and \
+        #                     y2 >= dataset_train.cond['yRng'][0] and \
+        #                     y1 <= dataset_train.cond['yRng'][1] and \
+        #                     y2 <= dataset_train.cond['yRng'][1] and \
+        #                     h >= dataset_train.cond['hRng'][0] and \
+        #                     h <= dataset_train.cond['hRng'][1]:
+
+        #                     valid[ii] = 1
+        #                 else:
+        #                     valid[ii] = 0
+                                    
+        #             target = target[np.where(valid)[0], :]
+        # except:
+        #     ipdb.set_trace()
+
+
+        #     vis, boxes, labels = dataset_train.transform(vis, target[:, :4].copy(), target[:, 4].copy())
+        #     lwir, _, _ = dataset_train.transform(lwir, target[:, :4].copy(), target[:, 4].copy())
 
         #     target = np.hstack((boxes, np.expand_dims(labels, axis=1)))
+        #     target[np.where(labels == -1)[0], :-1] = 0.0
 
-        #     if np.any( boxes > 1.0 ):
+        #     if np.any( boxes > 10.0 ):
         #         ipdb.set_trace()
 
 
@@ -390,7 +439,7 @@ def trainval():
         # vis_ = aug( vis, np.array(target)[:, :4], np.array(target)[:, 4] )
 
 
-        for _iter, (color, lwir, targets, _, _) in enumerate(loader_train):            
+        for _iter, (color, lwir, targets, _, _, index) in enumerate(loader_train):            
 
             if args.cuda:
                 # images = Variable(images.cuda())
@@ -415,8 +464,18 @@ def trainval():
             
             # if np.all(targets[:,-1] == -1):
             #     ipdb.set_trace()
+            
 
+            # loss_l, loss_c, problem = criterion(out, targets)
             loss_l, loss_c = criterion(out, targets)
+
+            # if problem:
+            #     continue               
+
+
+            if loss_l.data.cpu().numpy() > 100:            
+                ipdb.set_trace()
+
             loss = loss_l + loss_c
             loss.backward()
             optimizer.step()
@@ -426,9 +485,10 @@ def trainval():
             
             iteration = epoch * len(loader_train) + _iter
 
-            if iteration % 10 == 0:                
+            if iteration % 10 == 0:
                 logger.info('[Epoch {:3d}] [Iter {:5d}] loss: {:3.4f} = {:3.4f} (loc) + {:3.4f} (cls)\
-                    \t[time: {:.3f}sec]'.format( epoch, iteration, loss.data[0], loss_l.data[0], loss_c.data[0], t1-t0 ) )
+                    \t[time: {:.3f}sec] [# of GT in minibatch: {:2d}]'.format( \
+                        epoch, iteration, loss.data[0], loss_l.data[0], loss_c.data[0], t1-t0, np.sum([np.sum(box.data.cpu().numpy()[:,-1] == 0) for box in targets]) ) )
 
                 if args.visdom and args.images_on_visdom:
                     random_batch_index = np.random.randint(images.size(0))

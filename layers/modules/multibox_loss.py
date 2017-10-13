@@ -82,6 +82,9 @@ class MultiBoxLoss(nn.Module):
         pos = conf_t > 0
         num_pos = pos.sum(keepdim=True)
 
+        # if num_pos.data.cpu().numpy() == 0:
+        #     return None, None, True
+
         # Localization Loss (Smooth L1)
         # Shape: [batch,num_priors,4]        
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
@@ -111,7 +114,6 @@ class MultiBoxLoss(nn.Module):
         loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
 
         # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
-
         N = num_pos.data.sum()
         loss_l /= N
         loss_c /= N
