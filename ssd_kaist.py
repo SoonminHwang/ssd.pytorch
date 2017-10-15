@@ -84,7 +84,7 @@ class SSD(nn.Module):
             x = self.vgg[k](x)
 
         ## TODO: concat? sum?
-        # x = x + lwir
+        x = x + lwir
 
         # apply vgg up to conv4_3 relu
         # for k in range(23):

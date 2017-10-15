@@ -36,13 +36,14 @@ import ipdb
 # parser.add_argument('--basenet',            default='weights/vgg16_bn-6c64b313.pth', help='pretrained base model')
 
 parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Training on KAIST dataset')
-parser.add_argument('--version',default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
-parser.add_argument('--basenet',default='weights/vgg16_reducedfc.pth', help='pretrained base model')
-parser.add_argument('--jaccard_threshold',default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',default=32, type=int, help='Batch size for training')
-parser.add_argument('--resume',default=None, type=str, help='Resume from checkpoint')
+parser.add_argument('--version',            default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
+parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
+parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
+parser.add_argument('--batch_size',         default=32, type=int, help='Batch size for training')
+parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
-parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
+# parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
+parser.add_argument('--epochs',             default=500, type=int, help='Number of training epochs')
 parser.add_argument('--start_iter',         default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
 parser.add_argument('--cuda',               default=True, action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr',                 default=1e-3, type=float, help='initial learning rate')
@@ -115,9 +116,11 @@ num_classes = 2
 batch_size = args.batch_size
 # accum_batch_size = 32
 # iter_size = accum_batch_size / batch_size
-max_iter = 120000
-weight_decay = 0.0005
-stepvalues = (80000, 100000, 120000)
+# max_iter = 120000
+# stepvalues = (80000, 100000, 120000)
+# max_iter = 40000
+# stepvalues = (20000, 30000)
+weight_decay = args.weight_decay
 gamma = args.gamma
 momentum = args.momentum
 
@@ -125,8 +128,8 @@ ssd_net = build_ssd('train', ssd_dim, num_classes)
 net = ssd_net
 
 if args.cuda:
-    # net = torch.nn.DataParallel(ssd_net)
-    net = ssd_net
+    net = torch.nn.DataParallel(ssd_net)
+    # net = ssd_net
     cudnn.benchmark = True
 
 if args.resume:
@@ -201,22 +204,6 @@ def write_kaist_results_file(all_boxes, dataset, result_name):
                 f.write('{:d},{:.4f},{:.4f},{:.4f},{:.4f},{:.4f}\n'.format(
                     ii+1, bb[0],bb[1],bb[2]-bb[0]+1,bb[3]-bb[1]+1,bb[4]))
 
-
-    # for cls_ind, cls in enumerate(labelmap):
-    #     print('Writing {:s} KAIST results file'.format(cls))
-    #     # filename = get_voc_results_file_template('test', cls)
-    #     filename = 'tmp/det_test_%s.txt' % (cls)
-    #     with open(filename, 'wt') as f:
-    #         for im_ind, index in enumerate(dataset.ids):
-    #             dets = all_boxes[cls_ind+1][im_ind]
-    #             if dets == []:
-    #                 continue
-    #             # the VOCdevkit expects 1-based indices
-    #             for k in range(dets.shape[0]):
-    #                 f.write('{:s} {:.3f} {:.1f} {:.1f} {:.1f} {:.1f}\n'.
-    #                         format(index[1], dets[k, -1],
-    #                                dets[k, 0] + 1, dets[k, 1] + 1,
-    #                                dets[k, 2] + 1, dets[k, 3] + 1))
 
 def do_python_eval(use_07=True):
     devkit_path = VOCroot + 'VOC2007'
@@ -302,16 +289,15 @@ def validation( net, loader, dataset, result_name ):
 
             all_boxes[j][i] = cls_dets            
 
-        print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
-                                                    num_images, detect_time))
+        if i % 100 == 0:
+            print('im_detect: {:d}/{:d} {:.3f}s'.format(i+1, num_images, detect_time))
 
     net.train()    
 
     write_kaist_results_file(all_boxes, dataset, result_name)
-
-    ipdb.set_trace()
-
-    return do_python_eval()
+    
+    # return do_python_eval()
+    return 1.0
 
 def trainval():
     net.train()
@@ -320,15 +306,6 @@ def trainval():
     conf_loss = 0
     epoch = 0
     print('Loading Dataset...')
-
-    # dataset_test = KAISTDetection(args.db_root, val_sets, BaseTransform(300, means), AnnotationTransform())
-    # test_loader = torch.utils.data.DataLoader(dataset=dataset_test,
-    #                                batch_size=1, 
-    #                                shuffle=False, num_workers=4)
-
-    # dataset = KAISTDetection(args.db_root, train_sets, SSDAugmentation(
-    #     ssd_dim, means), AnnotationTransform())
-
 
     dataset_test = KAISTDetection(args.db_root, val_sets, BaseTransform(300, means), AnnotationTransform())
     loader_test = torch.utils.data.DataLoader(dataset=dataset_test, 
@@ -347,6 +324,7 @@ def trainval():
         lot = viz.line(
             X=torch.zeros((1,)).cpu(),
             Y=torch.zeros((1, 3)).cpu(),
+            env=exp_time + exp_name,
             opts=dict(
                 xlabel='Iteration',
                 ylabel='Loss',
@@ -357,31 +335,29 @@ def trainval():
             )
         )
         
-        epoch_map = viz.line(
-            X=torch.zeros((1,)).cpu(),
-            Y=torch.zeros((1,)).cpu(),
-            opts=dict(
-                xlabel='Epoch',
-                ylabel='mAP',
-                title='mAP of trained model',
-                legend=['test mAP'],
-                width=800, height=500, size=30
-            )
-        )
+        # epoch_map = viz.line(
+        #     X=torch.zeros((1,)).cpu(),
+        #     Y=torch.zeros((1,)).cpu(),
+        #     env=exp_name,
+        #     opts=dict(
+        #         xlabel='Epoch',
+        #         ylabel='mAP',
+        #         title='mAP of trained model',
+        #         legend=['test mAP'],
+        #         width=800, height=500, size=30
+        #     )
+        # )
 
-    max_epoch = args.iterations // len(loader_train) + 1
+    # max_epoch = args.iterations // len(loader_train) + 1
+    max_epoch = args.epochs
     logger.info('Max epoch: {}'.format(max_epoch))
 
-    milestones = [ step // len(loader_train) + 1 for step in stepvalues ]
+    milestones = [ int(max_epoch*0.5), int(max_epoch*0.75) ]
     optim_scheduler = lr_scheduler.MultiStepLR(optimizer, milestones=milestones, gamma=0.1)
     logger.info('Milestones for LR schedulring: {}'.format(milestones))
 
-    best_mAP = 0.0
-
-    ssd_net.set_phase('test')    
-    mAP = validation( net, loader_test, dataset_test, 'SSD300_epoch{:d}'.format(500) )
-    ssd_net.set_phase('train')
-
+    best_mAP = 0.0    
+    iter_per_epoch = len(loader_train)
     for epoch in range(max_epoch):
 
         logger.info('\n')
@@ -520,9 +496,11 @@ def trainval():
             iteration = epoch * len(loader_train) + _iter
 
             if iteration % 10 == 0:
-                logger.info('[Epoch {:3d}] [Iter {:5d}] loss: {:3.4f} = {:3.4f} (loc) + {:3.4f} (cls)\
+                logger.info('[Epoch {:3d}] [Iter {:5d}/{:d}] loss: {:3.4f} = {:3.4f} (loc) + {:3.4f} (cls)\
                     \t[time: {:.3f}sec] [# of GT in minibatch: {:2d}]'.format( \
-                        epoch, iteration, loss.data[0], loss_l.data[0], loss_c.data[0], t1-t0, np.sum([np.sum(box.data.cpu().numpy()[:,-1] == 0) for box in targets]) ) )
+                        epoch, iteration, iter_per_epoch, 
+                        loss.data[0], loss_l.data[0], loss_c.data[0], 
+                        t1-t0, np.sum([np.sum(box.data.cpu().numpy()[:,-1] == 0) for box in targets]) ) )
 
                 if args.visdom and args.images_on_visdom:
                     random_batch_index = np.random.randint(images.size(0))
@@ -534,32 +512,35 @@ def trainval():
                     X=torch.ones((1, 3)).cpu() * iteration,
                     Y=torch.Tensor([loss_l.data[0], loss_c.data[0],
                         loss_l.data[0] + loss_c.data[0]]).unsqueeze(0).cpu(),
+                    env=exp_time + exp_name,
                     win=lot,
                     update='append'
                 )           
 
 
-        # if ( epoch > 0 and epoch <= 100 and epoch % 20 == 0) or ( epoch > 100 and epoch % 5 == 0 ):
-        #     # if epoch >= 0 and epoch % 1 == 0:
-        #     # New epoch, validation
-        #     ssd_net.set_phase('test')
-        #     mAP = validation( net, loader_test, dataset_test )
-        #     ssd_net.set_phase('train')
+        if ( epoch > 0 and epoch <= 100 and epoch % 20 == 0) or ( epoch > 100 and epoch % 10 == 0 ):        
+            # if epoch >= 0 and epoch % 1 == 0:
+            # New epoch, validation
+            ssd_net.set_phase('test')
+            mAP = validation( net, loader_test, dataset_test, 'SSD300_{:s}_epoch_{:04d}'.format(exp_name, epoch) )
+            ssd_net.set_phase('train')
 
-        #     viz.line(
-        #         X=torch.ones((1, )).cpu() * (epoch+1),
-        #         Y=torch.Tensor([mAP]).cpu(),
-        #         win=epoch_map,
-        #         update=True
-        #     )
+            ipdb.set_trace()
 
-        #     if mAP > best_mAP:
-        #         print('Best mAP = {:.4f}'.format(mAP))
-        #         best_mAP = mAP
+            # viz.line(
+            #     X=torch.ones((1, )).cpu() * (epoch+1),
+            #     Y=torch.Tensor([mAP]).cpu(),
+            #     win=epoch_map,
+            #     update=True
+            # )
 
-        #         filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_epoch_{:03d}_mAP_{:.4f}.pth'.format(epoch, mAP))
-        #         print('Saving state, {:s}'.format(filename))
-        #         torch.save(ssd_net.state_dict(), filename)
+            # if mAP > best_mAP:
+            #     print('Best mAP = {:.4f}'.format(mAP))
+            #     best_mAP = mAP
+
+            filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_epoch_{:03d}_mAP_{:.4f}.pth'.format(epoch, mAP))
+            print('Saving state, {:s}'.format(filename))
+            torch.save(ssd_net.state_dict(), filename)
 
         filename = os.path.join(jobs_dir, 'snapshots', 'ssd300_epoch_{:03d}.pth'.format(epoch))
         print('Saving state, {:s}'.format(filename))
