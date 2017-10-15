@@ -33,13 +33,14 @@ from data import BaseTransform, v2, v1
 
 import ipdb
 
-parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Training on KAIST dataset')
-parser.add_argument('--version',            default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
-parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
 # parser.add_argument('--basenet',            default='weights/vgg16_bn-6c64b313.pth', help='pretrained base model')
-parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',         default=32, type=int, help='Batch size for training')
-parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
+
+parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Training on KAIST dataset')
+parser.add_argument('--version',default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
+parser.add_argument('--basenet',default='weights/vgg16_reducedfc.pth', help='pretrained base model')
+parser.add_argument('--jaccard_threshold',default=0.5, type=float, help='Min Jaccard index for matching')
+parser.add_argument('--batch_size',default=32, type=int, help='Batch size for training')
+parser.add_argument('--resume',default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
 parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
 parser.add_argument('--start_iter',         default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
@@ -189,22 +190,33 @@ criterion = MultiBoxLoss(num_classes, 0.5, True, 0, True, 3, 0.5, False, args.cu
 
 
 
-def write_voc_results_file(all_boxes, dataset):
-    for cls_ind, cls in enumerate(labelmap):
-        print('Writing {:s} VOC results file'.format(cls))
-        # filename = get_voc_results_file_template('test', cls)
-        filename = 'tmp/det_test_%s.txt' % (cls)
-        with open(filename, 'wt') as f:
-            for im_ind, index in enumerate(dataset.ids):
-                dets = all_boxes[cls_ind+1][im_ind]
-                if dets == []:
-                    continue
-                # the VOCdevkit expects 1-based indices
-                for k in range(dets.shape[0]):
-                    f.write('{:s} {:.3f} {:.1f} {:.1f} {:.1f} {:.1f}\n'.
-                            format(index[1], dets[k, -1],
-                                   dets[k, 0] + 1, dets[k, 1] + 1,
-                                   dets[k, 2] + 1, dets[k, 3] + 1))
+def write_kaist_results_file(all_boxes, dataset, result_name):
+    print('Writing KAIST result file')
+    filename = os.path.join(jobs_dir, '{:s}.txt'.format(result_name))
+    with open(filename, 'wt') as f:
+        for ii, bbs in enumerate(all_boxes[1]):
+            if bbs == []:
+                continue
+            for bb in bbs:                
+                f.write('{:d},{:.4f},{:.4f},{:.4f},{:.4f},{:.4f}\n'.format(
+                    ii+1, bb[0],bb[1],bb[2]-bb[0]+1,bb[3]-bb[1]+1,bb[4]))
+
+
+    # for cls_ind, cls in enumerate(labelmap):
+    #     print('Writing {:s} KAIST results file'.format(cls))
+    #     # filename = get_voc_results_file_template('test', cls)
+    #     filename = 'tmp/det_test_%s.txt' % (cls)
+    #     with open(filename, 'wt') as f:
+    #         for im_ind, index in enumerate(dataset.ids):
+    #             dets = all_boxes[cls_ind+1][im_ind]
+    #             if dets == []:
+    #                 continue
+    #             # the VOCdevkit expects 1-based indices
+    #             for k in range(dets.shape[0]):
+    #                 f.write('{:s} {:.3f} {:.1f} {:.1f} {:.1f} {:.1f}\n'.
+    #                         format(index[1], dets[k, -1],
+    #                                dets[k, 0] + 1, dets[k, 1] + 1,
+    #                                dets[k, 2] + 1, dets[k, 3] + 1))
 
 def do_python_eval(use_07=True):
     devkit_path = VOCroot + 'VOC2007'
@@ -227,7 +239,7 @@ def do_python_eval(use_07=True):
     return np.mean(aps)
     
 
-def validation( net, loader, dataset ):
+def validation( net, loader, dataset, result_name ):
 
     net.eval()    
     # timers
@@ -237,47 +249,67 @@ def validation( net, loader, dataset ):
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
-    all_boxes = [[[] for _ in range(num_images)]
-                 for _ in range(len(labelmap)+1)]
+    # all_boxes = [[[] for _ in range(num_images)]
+    #              for _ in range(len(labelmap)+1)]
+    all_boxes = [ [[] for _ in range(num_images)] for _ in range(num_classes) ]
 
-    for i, (images, targets, heights, widths) in enumerate(loader):
+    for i, (color, lwir, targets, heights, widths, index) in enumerate(loader):
         if args.cuda:
-            images = Variable(images.cuda())
+            color = Variable(color.cuda())
+            lwir = Variable(lwir.cuda())
             # targets = [Variable(anno.cuda(), volatile=True) for anno in targets]
         else:
-            images = Variable(images)
+            color = Variable(color)
+            lwir = Variable(lwir)
             # targets = [Variable(anno, volatile=True) for anno in targets]        
 
         h = heights[0]
         w = widths[0]
 
         _t['im_detect'].tic()
-        detections = net(images)[0].data
+        # detections = net(images)[0].data
+        detections = net(color, lwir).data
         detect_time = _t['im_detect'].toc(average=True)
-
+        
         # skip j = 0, because it's the background class
         for j in range(1, detections.size(1)):
             dets = detections[0, j, :]
             mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
             dets = torch.masked_select(dets, mask).view(-1, 5)
-            if dets.dim() == 0:
+            if dets.dim() == 0:                
                 continue
+            
             boxes = dets[:, 1:]
             boxes[:, 0] *= w
             boxes[:, 2] *= w
             boxes[:, 1] *= h
             boxes[:, 3] *= h
-            scores = dets[:, 0].cpu().numpy()
+            scores = dets[:, 0].cpu().numpy()            
             cls_dets = np.hstack((boxes.cpu().numpy(), scores[:, np.newaxis])) \
                 .astype(np.float32, copy=False)
-            all_boxes[j][i] = cls_dets
+
+            # ## DEBUG
+            # if np.any(scores > 0.5):
+            #     ipdb.set_trace()
+            #     import cv2
+            #     frame_id = dataset_train.ids[index.data.cpu().numpy()]
+            #     set_id, vid_id, img_id = frame_id[-1]
+            #     img = cv2.imread(dataset._imgpath % ( *frame_id[:-1], set_id, vid_id, 'visible', img_id ), cv2.IMREAD_COLOR )
+            #     bbs = cls_dets.astype(np.uint16)
+            #     for b in bbs:
+            #         cv2.rectangle(img, (int(b[0]),int(b[1])), (int(b[2]), int(b[3])), (255, 0, 0), 2 )
+            #     cv2.imwrite('result.jpg', img)
+
+            all_boxes[j][i] = cls_dets            
 
         print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
                                                     num_images, detect_time))
 
     net.train()    
 
-    write_voc_results_file(all_boxes, dataset)
+    write_kaist_results_file(all_boxes, dataset, result_name)
+
+    ipdb.set_trace()
 
     return do_python_eval()
 
@@ -346,6 +378,9 @@ def trainval():
 
     best_mAP = 0.0
 
+    ssd_net.set_phase('test')    
+    mAP = validation( net, loader_test, dataset_test, 'SSD300_epoch{:d}'.format(500) )
+    ssd_net.set_phase('train')
 
     for epoch in range(max_epoch):
 
@@ -429,8 +464,7 @@ def trainval():
         #     #     frame_id, gt, anno = dataset_train.pull_anno(ii)
 
         #     #     for b in gt:
-        #     #         cv2.rectangle( vis, (int(b[0]),int(b[1])), (int(b[2]), int(b[3])), (255, 0, 0), 2 )
-
+        #     #         cv2.rectangle( vis, (int(b[0]),int(b[1])), (int(b[2]), int(b[3])), (255, 0, 0), 2 )        
         #     #     cv2.imwrite( 'vis.jpg', vis)
 
         #     #     ipdb.set_trace()            

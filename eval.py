@@ -32,46 +32,46 @@ if sys.version_info[0] == 2:
 else:
     import xml.etree.ElementTree as ET
 
-def str2bool(v):
-    return v.lower() in ("yes", "true", "t", "1")
+# def str2bool(v):
+#     return v.lower() in ("yes", "true", "t", "1")
 
-parser = argparse.ArgumentParser(description='Single Shot MultiBox Detection')
-parser.add_argument('--trained_model', default='weights/ssd300_mAP_77.43_v2.pth',
-                    type=str, help='Trained state_dict file path to open')
-parser.add_argument('--save_folder', default='eval/', type=str,
-                    help='File path to save results')
-parser.add_argument('--confidence_threshold', default=0.01, type=float,
-                    help='Detection confidence threshold')
-parser.add_argument('--top_k', default=5, type=int,
-                    help='Further restrict the number of predictions to parse')
-parser.add_argument('--cuda', default=True, action='store_true',
-                    help='Use cuda to train model')
-parser.add_argument('--voc_root', default=VOCroot, help='Location of VOC root directory')
+# parser = argparse.ArgumentParser(description='Single Shot MultiBox Detection')
+# parser.add_argument('--trained_model', default='weights/ssd300_mAP_77.43_v2.pth',
+#                     type=str, help='Trained state_dict file path to open')
+# parser.add_argument('--save_folder', default='eval/', type=str,
+#                     help='File path to save results')
+# parser.add_argument('--confidence_threshold', default=0.01, type=float,
+#                     help='Detection confidence threshold')
+# parser.add_argument('--top_k', default=5, type=int,
+#                     help='Further restrict the number of predictions to parse')
+# parser.add_argument('--cuda', default=True, action='store_true',
+#                     help='Use cuda to train model')
+# parser.add_argument('--voc_root', default=VOCroot, help='Location of VOC root directory')
 
-args = parser.parse_args()
+# args = parser.parse_args()
 
-if not os.path.exists(args.save_folder):
-    os.mkdir(args.save_folder)
+# if not os.path.exists(args.save_folder):
+#     os.mkdir(args.save_folder)
 
-if args.cuda and torch.cuda.is_available():
-    torch.set_default_tensor_type('torch.cuda.FloatTensor')
-else:
-    torch.set_default_tensor_type('torch.FloatTensor')
+# if args.cuda and torch.cuda.is_available():
+#     torch.set_default_tensor_type('torch.cuda.FloatTensor')
+# else:
+#     torch.set_default_tensor_type('torch.FloatTensor')
 
-# annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
-# imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
-# imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
-# YEAR = '2007'
+# # annopath = os.path.join(args.voc_root, 'VOC2007', 'Annotations', '%s.xml')
+# # imgpath = os.path.join(args.voc_root, 'VOC2007', 'JPEGImages', '%s.jpg')
+# # imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets', 'Main', '{:s}.txt')
+# # YEAR = '2007'
 
-OUTPUT_PATH = 'outputs/ssd300_voc07_85k_to_12_5k'
-annopath = os.path.join(args.voc_root, 'VOC2012', 'Annotations', '%s.xml')
-imgpath = os.path.join(args.voc_root, 'VOC2012', 'JPEGImages', '%s.jpg')
-imgsetpath = os.path.join(args.voc_root, 'VOC2012', 'ImageSets', 'Main', '{:s}.txt')
-YEAR = '2012'
-devkit_path = VOCroot + 'VOC' + YEAR
-dataset_mean = (104, 117, 123)
-# set_type = 'test'
-set_type = 'val'
+# OUTPUT_PATH = 'outputs/ssd300_voc07_85k_to_12_5k'
+# annopath = os.path.join(args.voc_root, 'VOC2012', 'Annotations', '%s.xml')
+# imgpath = os.path.join(args.voc_root, 'VOC2012', 'JPEGImages', '%s.jpg')
+# imgsetpath = os.path.join(args.voc_root, 'VOC2012', 'ImageSets', 'Main', '{:s}.txt')
+# YEAR = '2012'
+# devkit_path = VOCroot + 'VOC' + YEAR
+# dataset_mean = (104, 117, 123)
+# # set_type = 'test'
+# set_type = 'val'
 
 class Timer(object):
     """A simple timer."""
