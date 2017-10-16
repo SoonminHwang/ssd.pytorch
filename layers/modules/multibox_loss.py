@@ -85,6 +85,8 @@ class MultiBoxLoss(nn.Module):
         # if num_pos.data.cpu().numpy() == 0:
         #     return None, None, True
 
+        # ipdb.set_trace()
+        
         # Localization Loss (Smooth L1)
         # Shape: [batch,num_priors,4]        
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)

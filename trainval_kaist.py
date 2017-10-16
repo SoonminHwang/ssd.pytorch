@@ -29,7 +29,7 @@ from data.kaist_rgbt_ped import AnnotationTransform, KAISTDetection, detection_c
 from data.kaist_rgbt_ped import KAIST_CLASSES as labelmap
 from data.kaist_rgbt_ped import DBroot
 
-from data import BaseTransform, v2, v1
+from data import BaseTransform, v3, v2, v1
 
 import ipdb
 
@@ -39,11 +39,11 @@ parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Trai
 parser.add_argument('--version',            default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
 parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',         default=32, type=int, help='Batch size for training')
+parser.add_argument('--batch_size',         default=16, type=int, help='Batch size for training')
 parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
 # parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
-parser.add_argument('--epochs',             default=500, type=int, help='Number of training epochs')
+parser.add_argument('--epochs',             default=1000, type=int, help='Number of training epochs')
 parser.add_argument('--start_iter',         default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
 parser.add_argument('--cuda',               default=True, action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr',                 default=1e-3, type=float, help='initial learning rate')
@@ -93,11 +93,11 @@ if args.cuda and torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-cfg = (v1, v2)[args.version == 'v2']
+# cfg = (v1, v2)[args.version == 'v2']
 
 
-# train_sets = [('04', 'train')]
-train_sets = [('20', 'train')]
+train_sets = [('04', 'train')]
+# train_sets = [('20', 'train')]
 val_sets = [('20', 'test')]
 
 # annopath = os.path.join(args.db_root, 'VOC2007', 'Annotations', '%s.xml')
@@ -109,7 +109,8 @@ val_sets = [('20', 'test')]
 
 
 # train_sets = 'train'
-ssd_dim = 300  # only support 300 now
+# ssd_dim = 300  # only support 300 now
+ssd_dim = (640, 512)  # only support 300 now
 means = (104, 117, 123)  # only support voc now
 # num_classes = len(labelmap) + 1
 num_classes = 2
@@ -124,7 +125,7 @@ weight_decay = args.weight_decay
 gamma = args.gamma
 momentum = args.momentum
 
-ssd_net = build_ssd('train', ssd_dim, num_classes)
+ssd_net = build_ssd('train', ssd_dim if not isinstance(ssd_dim, tuple) else '{:d}x{:d}'.format(*ssd_dim), num_classes)
 net = ssd_net
 
 if args.cuda:
@@ -307,7 +308,7 @@ def trainval():
     epoch = 0
     print('Loading Dataset...')
 
-    dataset_test = KAISTDetection(args.db_root, val_sets, BaseTransform(300, means), AnnotationTransform())
+    dataset_test = KAISTDetection(args.db_root, val_sets, BaseTransform(ssd_dim, means), AnnotationTransform())
     loader_test = torch.utils.data.DataLoader(dataset=dataset_test, 
                                 batch_size=1, num_workers=4,
                                 shuffle=False)
@@ -474,6 +475,8 @@ def trainval():
             
             # if np.all(targets[:,-1] == -1):
             #     ipdb.set_trace()
+
+            # ipdb.set_trace()
             
 
             # loss_l, loss_c, problem = criterion(out, targets)
@@ -525,7 +528,7 @@ def trainval():
             mAP = validation( net, loader_test, dataset_test, 'SSD300_{:s}_epoch_{:04d}'.format(exp_name, epoch) )
             ssd_net.set_phase('train')
 
-            ipdb.set_trace()
+            #ipdb.set_trace()
 
             # viz.line(
             #     X=torch.ones((1, )).cpu() * (epoch+1),

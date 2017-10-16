@@ -6,7 +6,7 @@ import numpy as np
 
 
 def base_transform(image, size, mean):
-    x = cv2.resize(image, (size, size)).astype(np.float32)
+    x = cv2.resize(image, size).astype(np.float32)
     # x = cv2.resize(np.array(image), (size, size)).astype(np.float32)
     x -= mean
     x = x.astype(np.float32)
@@ -15,7 +15,7 @@ def base_transform(image, size, mean):
 
 class BaseTransform:
     def __init__(self, size, mean):
-        self.size = size
+        self.size = size if isinstance(size, tuple) else (size, size)
         self.mean = np.array(mean, dtype=np.float32)
 
     def __call__(self, image, boxes=None, labels=None):

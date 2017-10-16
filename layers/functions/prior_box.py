@@ -32,7 +32,31 @@ class PriorBox(object):
     def forward(self):
         mean = []
         # TODO merge these
-        if self.version == 'v2':
+        if self.version == 'v3':
+            for k, f in enumerate(self.feature_maps):
+                # for i, j in product(range(f), repeat=2):
+                for i, j in product(range(f[0]), range(f[1])):
+                    f_k = self.image_size / self.steps[k]
+                    # unit center x,y
+                    cx = (j + 0.5) / f_k
+                    cy = (i + 0.5) / f_k
+
+                    # aspect_ratio: 1
+                    # rel size: min_size
+                    s_k = self.min_sizes[k]/self.image_size
+                    mean += [cx, cy, s_k, s_k]
+
+                    # aspect_ratio: 1
+                    # rel size: sqrt(s_k * s_(k+1))
+                    s_k_prime = sqrt(s_k * (self.max_sizes[k]/self.image_size))
+                    mean += [cx, cy, s_k_prime, s_k_prime]
+
+                    # rest of aspect ratios
+                    for ar in self.aspect_ratios[k]:
+                        mean += [cx, cy, s_k*sqrt(ar), s_k/sqrt(ar)]
+                        mean += [cx, cy, s_k/sqrt(ar), s_k*sqrt(ar)]
+
+        elif self.version == 'v2':
             for k, f in enumerate(self.feature_maps):
                 for i, j in product(range(f), repeat=2):
                     f_k = self.image_size / self.steps[k]

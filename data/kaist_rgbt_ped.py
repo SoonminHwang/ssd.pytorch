@@ -129,6 +129,7 @@ class KAISTDetection(data.Dataset):
         self.ids = list()
 
         for (skip, name) in image_sets:
+            self.name += '_' + name + skip
             for line in open(os.path.join(self.root, 'imageSets', '{:s}{:02d}.txt'.format(name, int(skip)))):
                 self.ids.append((self.root, line.strip().split('/')))
 
