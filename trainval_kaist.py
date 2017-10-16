@@ -39,7 +39,7 @@ parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Trai
 parser.add_argument('--version',            default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
 parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',         default=16, type=int, help='Batch size for training')
+parser.add_argument('--batch_size',         default=12, type=int, help='Batch size for training')
 parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
 # parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
@@ -96,8 +96,8 @@ else:
 # cfg = (v1, v2)[args.version == 'v2']
 
 
-train_sets = [('04', 'train')]
-# train_sets = [('20', 'train')]
+# train_sets = [('04', 'train')]
+train_sets = [('20', 'train')]
 val_sets = [('20', 'test')]
 
 # annopath = os.path.join(args.db_root, 'VOC2007', 'Annotations', '%s.xml')
