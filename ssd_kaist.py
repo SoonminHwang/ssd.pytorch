@@ -6,6 +6,9 @@ from layers import *
 from data import v3, v2
 import os
 
+import torchvision.models as models
+from collections import OrderedDict
+
 import ipdb
 
 class SSD(nn.Module):
@@ -25,13 +28,13 @@ class SSD(nn.Module):
         head: "multibox head" consists of loc and conf conv layers
     """
 
-    def __init__(self, phase, lwir, base, extras, head, source_layers, num_classes):
+    def __init__(self, phase, lwir, base, extras, head, num_classes):
         super(SSD, self).__init__()
         self.phase = phase
         self.num_classes = num_classes
         # TODO: implement __call__ in PriorBox
-        self.priorbox = PriorBox(v3)
-        # self.priorbox = PriorBox(v2)
+        # self.priorbox = PriorBox(v3)
+        self.priorbox = PriorBox(v2)
         self.priors = Variable(self.priorbox.forward(), volatile=True)
         # self.size = 300
 
@@ -40,14 +43,41 @@ class SSD(nn.Module):
         self.vgg = nn.ModuleList(base)
         self.merge_point = len(lwir)
 
+                
+        vgg16 = models.vgg16_bn(pretrained=True)
+        vgg16_weights = nn.ModuleList( [*vgg16.features.children()] )
+        vgg16_state = vgg16_weights.state_dict()
+        vgg16_state_keys = [ *vgg16_state.keys() ]
+        
+
+        loaded_state = OrderedDict()
+        state = self.vgg.state_dict()
+        state_keys = state.keys()
+        
+        for k in state_keys:
+            if k in vgg16_state_keys:
+                loaded_state[k] = vgg16_state[k]
+
+        state.update(loaded_state)    
+        self.vgg.load_state_dict(state)
+
+        
+
+        loaded_state = OrderedDict()
+        state = self.lwir.state_dict()
+        state_keys = state.keys()
+
+        vgg16_state['0.weight'] = torch.mean( vgg16_state['0.weight'], dim=1, keepdim=True )
+        for k in state_keys:
+            if k in vgg16_state_keys:
+                loaded_state[k] = vgg16_state[k]
+
+        state.update(loaded_state)    
+        self.lwir.load_state_dict(state)
+
+        
         # Layer learns to scale the l2 normalized features from conv4_3
-        # self.L2Norm = L2Norm(512, 20)
-
-        self.source_layers = source_layers
-
-        # assert len(self.vgg) == source_layers[0][1]
-        # assert len(self.extras) == source_layers[1][-1]
-
+        self.L2Norm = L2Norm(512, 20)
         self.extras = nn.ModuleList(extras)
 
         self.loc = nn.ModuleList(head[0])
@@ -87,7 +117,7 @@ class SSD(nn.Module):
         conf = list()
 
         for k in range(self.merge_point):
-            lwir = self.lwir[k](lwir)
+            # lwir = self.lwir[k](lwir)
             x = self.vgg[k](x)
 
         ## TODO: concat? sum?
@@ -96,30 +126,24 @@ class SSD(nn.Module):
         # apply vgg up to conv4_3 relu
         # for k in range(23):
         # for k in range(self.merge_point, 23):
-        for k in range(self.merge_point, self.source_layers[0][0]):
+        for k in range(self.merge_point, 33):
             x = self.vgg[k](x)
 
-        # s = self.L2Norm(x)
-        s = x
+        s = self.L2Norm(x)
+        # s = x
         sources.append(s)
 
         # apply vgg up to fc7
-        # for k in range(23, len(self.vgg)):        
-        for k in range(self.source_layers[0][0], len(self.vgg)):
+        # for k in range(23, len(self.vgg)):
+        for k in range(33, len(self.vgg)):
             x = self.vgg[k](x)
         sources.append(x)
 
         # apply extra layers and cache source layer outputs
         for k, v in enumerate(self.extras):
-            x = v(x)
-            # if k % 2 == 1:
-            if k in self.source_layers[1]:
+            x = F.relu(v(x), inplace=True)
+            if k % 2 == 1:
                 sources.append(x)
-
-        # for k, v in enumerate(self.extras):
-        #     x = F.relu(v(x), inplace=True)
-        #     if k % 2 == 1:
-        #         sources.append(x)
 
         # ipdb.set_trace()
 
@@ -161,7 +185,6 @@ class SSD(nn.Module):
 def vgg(cfg, i, batch_norm=True, simple=False):
     layers = []
     in_channels = i
-
     for v in cfg:
         if v == 'M':
             layers += [nn.MaxPool2d(kernel_size=2, stride=2)]
@@ -170,7 +193,7 @@ def vgg(cfg, i, batch_norm=True, simple=False):
         else:
             conv2d = nn.Conv2d(in_channels, v, kernel_size=3, padding=1)
             if batch_norm:
-                layers += [conv2d, nn.BatchNorm2d(v, affine=True), nn.ReLU(inplace=True)]
+                layers += [conv2d, nn.BatchNorm2d(v), nn.ReLU(inplace=True)]
             else:
                 layers += [conv2d, nn.ReLU(inplace=True)]
             in_channels = v
@@ -178,13 +201,9 @@ def vgg(cfg, i, batch_norm=True, simple=False):
     if not simple:
         pool5 = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
         conv6 = nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6)
-        bn6 = nn.BatchNorm2d(1024, affine=True)
         conv7 = nn.Conv2d(1024, 1024, kernel_size=1)
-        bn7 = nn.BatchNorm2d(1024, affine=True)
-
-        layers += [pool5, 
-                conv6, bn6, nn.ReLU(inplace=True), 
-                conv7, bn7, nn.ReLU(inplace=True)]
+        layers += [pool5, conv6,
+                   nn.ReLU(inplace=True), conv7, nn.ReLU(inplace=True)]
     return layers
 
 
@@ -196,44 +215,29 @@ def add_extras(cfg, i, batch_norm=True):
     for k, v in enumerate(cfg):
         if in_channels != 'S':
             if v == 'S':
-                layers += [nn.Conv2d(in_channels, cfg[k + 1], kernel_size=(1, 3)[flag], stride=2, padding=1),
-                            nn.BatchNorm2d(cfg[k + 1], affine=True)]
+                layers += [nn.Conv2d(in_channels, cfg[k + 1],
+                           kernel_size=(1, 3)[flag], stride=2, padding=1)]
             else:
-                layers += [nn.Conv2d(in_channels, v, kernel_size=(1, 3)[flag]),
-                            nn.BatchNorm2d(v, affine=True)]
-            layers += [nn.ReLU(inplace=True)]
-
+                layers += [nn.Conv2d(in_channels, v, kernel_size=(1, 3)[flag])]
             flag = not flag
         in_channels = v
     return layers
 
 
-def multibox(lwir, vgg, extra_layers, cfg, src, num_classes):
+def multibox(lwir, vgg, extra_layers, cfg, num_classes):
     loc_layers = []
     conf_layers = []
-
-    # offset = 0
-    # vgg_source = [24, -2]
-    # ext_source = []
-    # ipdb.set_trace()
-
-    for k, v in enumerate(src[0]):
-        loc_layers += [nn.Conv2d(vgg[v-3].out_channels,
+    vgg_source = [24, -2]
+    for k, v in enumerate(vgg_source):
+        loc_layers += [nn.Conv2d(vgg[v].out_channels,
                                  cfg[k] * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(vgg[v-3].out_channels,
+        conf_layers += [nn.Conv2d(vgg[v].out_channels,
                         cfg[k] * num_classes, kernel_size=3, padding=1)]
-
-    for k, v in enumerate(src[1], 2):
-        loc_layers += [nn.Conv2d(extra_layers[v-2].out_channels,
-                                 cfg[k] * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(extra_layers[v-2].out_channels,
-                        cfg[k] * num_classes, kernel_size=3, padding=1)]
-
-    # for k, v in enumerate(extra_layers[1::2], 2):
-    #     loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
-    #                              * 4, kernel_size=3, padding=1)]
-    #     conf_layers += [nn.Conv2d(v.out_channels, cfg[k]
-    #                               * num_classes, kernel_size=3, padding=1)]
+    for k, v in enumerate(extra_layers[1::2], 2):
+        loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
+                                 * 4, kernel_size=3, padding=1)]
+        conf_layers += [nn.Conv2d(v.out_channels, cfg[k]
+                                  * num_classes, kernel_size=3, padding=1)]
     return lwir, vgg, extra_layers, (loc_layers, conf_layers)
 
 lwir = {
@@ -255,13 +259,6 @@ extras = {
     '600': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
     '640x512': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
 }
-
-# mbox_source_layers = ['conv4_3', 'fc7', 'conv6_2', 'conv7_2', 'conv8_2', 'conv9_2']
-sources = {
-    '300': [(33, 50), (5, 11, 17, 23)],
-    '640x512': [(33, 50), (5, 11, 17, 23)]
-}
-
 mbox = {
     '300': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
     '600': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
@@ -279,5 +276,4 @@ def build_ssd(phase, size=300, num_classes=21):
 
     return SSD(phase, *multibox(vgg(lwir[str(size)], 1, simple=True), vgg(base[str(size)], 3),
                                 add_extras(extras[str(size)], 1024),
-                                mbox[str(size)], sources[str(size)], num_classes), 
-                sources[str(size)], num_classes)
+                                mbox[str(size)], num_classes), num_classes)
