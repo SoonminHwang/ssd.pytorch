@@ -39,13 +39,14 @@ parser = argparse.ArgumentParser(description='Single Shot MultiBox Detector Trai
 parser.add_argument('--version',            default='v2', help='conv11_2(v2) or pool6(v1) as last layer')
 parser.add_argument('--basenet',            default='weights/vgg16_reducedfc.pth', help='pretrained base model')
 parser.add_argument('--jaccard_threshold',  default=0.5, type=float, help='Min Jaccard index for matching')
-parser.add_argument('--batch_size',         default=12, type=int, help='Batch size for training')
+# parser.add_argument('--batch_size',         default=48, type=int, help='Batch size for training')
+parser.add_argument('--batch_size',         default=2, type=int, help='Batch size for training')
 parser.add_argument('--resume',             default=None, type=str, help='Resume from checkpoint')
 parser.add_argument('--num_workers',        default=8, type=int, help='Number of workers used in dataloading')
 # parser.add_argument('--iterations',         default=120000, type=int, help='Number of training iterations')
 parser.add_argument('--epochs',             default=1000, type=int, help='Number of training epochs')
 parser.add_argument('--start_iter',         default=0, type=int, help='Begin counting iterations starting from this value (should be used with resume)')
-parser.add_argument('--cuda',               default=True, action='store_true', help='Use cuda to train model')
+parser.add_argument('--cuda',               default=False, action='store_true', help='Use cuda to train model')
 parser.add_argument('--lr',                 default=1e-3, type=float, help='initial learning rate')
 parser.add_argument('--momentum',           default=0.9, type=float, help='momentum')
 parser.add_argument('--weight_decay',       default=5e-4, type=float, help='Weight decay for SGD')
@@ -96,8 +97,8 @@ else:
 # cfg = (v1, v2)[args.version == 'v2']
 
 
-# train_sets = [('04', 'train')]
-train_sets = [('20', 'train')]
+train_sets = [('01', 'train')]
+# train_sets = [('20', 'train')]
 val_sets = [('20', 'test')]
 
 # annopath = os.path.join(args.db_root, 'VOC2007', 'Annotations', '%s.xml')
@@ -129,8 +130,8 @@ ssd_net = build_ssd('train', ssd_dim if not isinstance(ssd_dim, tuple) else '{:d
 net = ssd_net
 
 if args.cuda:
-    net = torch.nn.DataParallel(ssd_net)
-    # net = ssd_net
+    # net = torch.nn.DataParallel(ssd_net)
+    net = ssd_net
     cudnn.benchmark = True
 
 if args.resume:
@@ -153,8 +154,8 @@ else:
     # state.update(loaded_state)    
     # ssd_net.lwir.load_state_dict(state)
 
-if args.cuda:
-    net = net.cuda()
+# if args.cuda:
+#     net = net.cuda()
 
 
 def weights_init(m):
@@ -478,6 +479,10 @@ def trainval():
 
             # ipdb.set_trace()
             
+            # if np.sum([np.sum(box.data.cpu().numpy()[:,-1] == 0) for box in targets]) == 0:
+            #     ipdb.set_trace()
+            # else:
+            #     ipdb.set_trace()
 
             # loss_l, loss_c, problem = criterion(out, targets)
             loss_l, loss_c = criterion(out, targets)
@@ -486,15 +491,27 @@ def trainval():
             #     continue               
 
 
-            if loss_l.data.cpu().numpy() > 100:            
-                ipdb.set_trace()
+            # if loss_l.data.cpu().numpy() > 100:            
+            #     ipdb.set_trace()
 
-            loss = loss_l + loss_c
+            loss = loss_l + loss_c            
             loss.backward()
-            optimizer.step()
-            t1 = time.time()
-            loc_loss += loss_l.data[0]
+
             conf_loss += loss_c.data[0]
+            loc_loss += loss_l.data[0]
+            
+            # loss_c.backward(retain_graph=True)
+            # conf_loss += loss_c.data[0]
+
+            # if loss_l is not None:
+            #     loss_l.backward()
+            #     loc_loss += loss_l.data[0]
+            #     loss = loss_l + loss_c  
+            
+            optimizer.step()
+            t1 = time.time()            
+            
+            
             
             iteration = epoch * len(loader_train) + _iter
 

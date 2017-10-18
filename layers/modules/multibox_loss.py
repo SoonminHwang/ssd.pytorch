@@ -83,6 +83,8 @@ class MultiBoxLoss(nn.Module):
         num_pos = pos.sum(keepdim=True)
 
         # if num_pos.data.cpu().numpy() == 0:
+        #     loss_l = None
+        # else:
         #     return None, None, True
 
         # ipdb.set_trace()
@@ -93,6 +95,10 @@ class MultiBoxLoss(nn.Module):
         loc_p = loc_data[pos_idx].view(-1, 4)
         loc_t = loc_t[pos_idx].view(-1, 4)
         loss_l = F.smooth_l1_loss(loc_p, loc_t, size_average=False)
+        
+        if num_pos.data.cpu().numpy() == 0:
+            loss_l = loss_l.detach()    # Don't optimize
+            
 
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
@@ -105,7 +111,8 @@ class MultiBoxLoss(nn.Module):
         _, loss_idx = loss_c.sort(1, descending=True)
         _, idx_rank = loss_idx.sort(1)
         num_pos = pos.long().sum(1, keepdim=True)
-        num_neg = torch.clamp(self.negpos_ratio*num_pos , max=pos.size(1)-1)
+        # num_neg = torch.clamp(self.negpos_ratio*num_pos , max=pos.size(1)-1)
+        num_neg = torch.clamp( torch.clamp(self.negpos_ratio*num_pos, max=pos.size(1)-1), min=128)
     
         neg = idx_rank < num_neg.expand_as(idx_rank)
 
@@ -115,15 +122,16 @@ class MultiBoxLoss(nn.Module):
         conf_p = conf_data[(pos_idx+neg_idx).gt(0)].view(-1, self.num_classes)
         targets_weighted = conf_t[(pos+neg).gt(0)]
 
-        if len(targets_weighted.size()) == 0:
-            loss_c = conf_p * 0.0
-            loss_l = loss_l * 0.0
-        else:        
-            loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
+        # if len(targets_weighted.size()) == 0:
+        #     loss_c = torch.sum(conf_p) * 0.0
+        #     loss_l = torch.sum(loss_l) * 0.0
+        # else:        
+        loss_c = F.cross_entropy(conf_p, targets_weighted, size_average=False)
 
-            # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
-            N = num_pos.data.sum()
-            loss_l /= N
-            loss_c /= N
+        # Sum of losses: L(x,c,l,g) = (Lconf(x, c) + αLloc(x,l,g)) / N
+        # N = num_pos.data.sum()
+        N = num_pos.data.sum() + num_neg.data.sum()        
+        loss_l /= N
+        loss_c /= N
 
         return loss_l, loss_c
