@@ -33,6 +33,33 @@ def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
 
 
+
+def detection_collate(batch):
+    """Custom collate fn for dealing with batches of images that have a different
+    number of associated object annotations (bounding boxes).
+
+    Arguments:
+        batch: (tuple) A tuple of tensor images and lists of annotations
+
+    Return:
+        A tuple containing:
+            1) (tensor) batch of images stacked on their 0 dim
+            2) (list of tensors) annotations for a given image are stacked on
+                                 0 dim
+    """
+    targets = []
+    imgs = []
+    heights = []
+    widths = []
+
+    for sample in batch:
+        imgs.append(sample[0])
+        targets.append(torch.FloatTensor(sample[1]))
+        heights.append(sample[2])
+        widths.append(sample[3])
+    return torch.stack(imgs, 0), targets, heights, widths
+
+
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Evaluation')
 parser.add_argument('--trained_model',
@@ -50,6 +77,8 @@ parser.add_argument('--voc_root', default=VOC_ROOT,
                     help='Location of VOC root directory')
 parser.add_argument('--cleanup', default=True, type=str2bool,
                     help='Cleanup and remove results files following eval')
+parser.add_argument('--batch_size', default=8, type=int,
+                    help='Further restrict the number of predictions to parse')
 
 args = parser.parse_args()
 
@@ -361,9 +390,10 @@ cachedir: Directory for caching the annotations
     return rec, prec, ap
 
 
-def test_net(save_folder, net, cuda, dataset, transform, top_k,
+def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
              im_size=300, thresh=0.05):
-    num_images = len(dataset)
+    #num_images = len(dataset)
+
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
@@ -375,36 +405,62 @@ def test_net(save_folder, net, cuda, dataset, transform, top_k,
     output_dir = get_output_dir('ssd300_120000', set_type)
     det_file = os.path.join(output_dir, 'detections.pkl')
 
-    for i in range(num_images):
-        im, gt, h, w = dataset.pull_item(i)
+    #for i in range(num_images):
+    #    im, gt, h, w = dataset.pull_item(i)
 
-        x = Variable(im.unsqueeze(0))
+    for ii, (im, gt, h, w) in enumerate(dataloader):
+       
         if args.cuda:
-            x = x.cuda()
-        _t['im_detect'].tic()
-        detections = net(x).data
-        detect_time = _t['im_detect'].toc(average=False)
+            x = im.cuda()
 
-        # skip j = 0, because it's the background class
-        for j in range(1, detections.size(1)):
-            dets = detections[0, j, :]
-            mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
-            dets = torch.masked_select(dets, mask).view(-1, 5)
-            if dets.size(0) == 0:
-                continue
-            boxes = dets[:, 1:]
-            boxes[:, 0] *= w
-            boxes[:, 2] *= w
-            boxes[:, 1] *= h
-            boxes[:, 3] *= h
-            scores = dets[:, 0].cpu().numpy()
-            cls_dets = np.hstack((boxes.cpu().numpy(),
-                                  scores[:, np.newaxis])).astype(np.float32,
+        with torch.no_grad():
+            _t['im_detect'].tic()
+            detections = net(x)
+            detect_time = _t['im_detect'].toc(average=False)
+
+        B = detections.size(0)
+        for jj in range(B):
+            for kk in range(1, detections.size(1)):
+                dets = detections[jj, kk, :]
+            
+
+                mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
+                dets = torch.masked_select(dets, mask).view(-1, 5)
+                if dets.size(0) == 0:
+                    continue
+                boxes = dets[:, 1:]
+                boxes[:, 0] *= w[jj]
+                boxes[:, 2] *= w[jj]
+                boxes[:, 1] *= h[jj]
+                boxes[:, 3] *= h[jj]
+
+                scores = dets[:, 0].cpu().numpy()
+                cls_dets = np.hstack((boxes.cpu().numpy(),
+                                      scores[:, np.newaxis])).astype(np.float32,
                                                                  copy=False)
-            all_boxes[j][i] = cls_dets
+                all_boxes[kk][ii*B+jj] = cls_dets
 
-        print('im_detect: {:d}/{:d} {:.3f}s'.format(i + 1,
-                                                    num_images, detect_time))
+
+        ## skip j = 0, because it's the background class
+        #for j in range(1, detections.size(1)):
+        #    dets = detections[0, j, :]
+        #    mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
+        #    dets = torch.masked_select(dets, mask).view(-1, 5)
+        #    if dets.size(0) == 0:
+        #        continue
+        #    boxes = dets[:, 1:]
+        #    boxes[:, 0] *= w
+        #    boxes[:, 2] *= w
+        #    boxes[:, 1] *= h
+        #    boxes[:, 3] *= h
+        #    scores = dets[:, 0].cpu().numpy()
+        #    cls_dets = np.hstack((boxes.cpu().numpy(),
+        #                          scores[:, np.newaxis])).astype(np.float32,
+        #                                                         copy=False)
+        #    all_boxes[j][i] = cls_dets
+
+        if ii % 1 == 0:
+            print('im_detect: {:d}/{:d} {:.3f}s'.format(ii, len(dataloader), detect_time))
 
     with open(det_file, 'wb') as f:
         pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
@@ -429,10 +485,17 @@ if __name__ == '__main__':
     dataset = VOCDetection(args.voc_root, [('2007', set_type)],
                            BaseTransform(300, dataset_mean),
                            VOCAnnotationTransform())
+
+    num_images = len(dataset)
+
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.batch_size, 
+                              shuffle=False, num_workers=0, collate_fn=detection_collate)
     if args.cuda:
+        #net = torch.nn.DataParallel(net)
         net = net.cuda()
         cudnn.benchmark = True
+
     # evaluation
-    test_net(args.save_folder, net, args.cuda, dataset,
-             BaseTransform(net.size, dataset_mean), args.top_k, 300,
+    test_net(args.save_folder, net, args.cuda, dataloader,
+             BaseTransform(net.size, dataset_mean), args.top_k, num_images, 300,
              thresh=args.confidence_threshold)

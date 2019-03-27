@@ -31,7 +31,8 @@ class SSD(nn.Module):
         self.num_classes = num_classes
         self.cfg = (coco, voc)[num_classes == 21]
         self.priorbox = PriorBox(self.cfg)
-        self.priors = Variable(self.priorbox.forward(), volatile=True)
+        #self.priors = Variable(self.priorbox.forward(), volatile=True)
+        self.priors = self.priorbox.forward().float().cuda()
         self.size = size
 
         # SSD network
@@ -101,7 +102,7 @@ class SSD(nn.Module):
                 self.softmax(conf.view(conf.size(0), -1,
                              self.num_classes)),                # conf preds
                 self.priors.type(type(x.data))                  # default boxes
-            )
+            ).data
         else:
             output = (
                 loc.view(loc.size(0), -1, 4),
