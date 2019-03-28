@@ -1,4 +1,4 @@
-FROM nvidia/cuda:10.0-cudnn7-devel-ubuntu16.04
+FROM nvidia/cuda:9.0-cudnn7-devel-ubuntu16.04
 MAINTAINER Soonmin Hwang <jjang9hsm@gmail.com>
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -28,7 +28,7 @@ RUN curl -o /home/$USER_NAME/anaconda.sh -O https://repo.anaconda.com/archive/An
 RUN chmod +x /home/$USER_NAME/anaconda.sh && \
      /home/$USER_NAME/anaconda.sh -b -p /home/$USER_NAME/anaconda3 && \
      /home/$USER_NAME/anaconda3/bin/conda install numpy pyyaml mkl mkl-include setuptools cmake cffi typing ipython && \
-     /home/$USER_NAME/anaconda3/bin/conda install pytorch torchvision cudatoolkit=10.0 -c pytorch && \
+     /home/$USER_NAME/anaconda3/bin/conda install pytorch torchvision cudatoolkit=9.0 -c pytorch && \
      /home/$USER_NAME/anaconda3/bin/conda install opencv && \
      /home/$USER_NAME/anaconda3/bin/conda clean -ya
 
