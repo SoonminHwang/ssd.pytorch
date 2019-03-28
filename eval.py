@@ -104,6 +104,7 @@ devkit_path = args.voc_root + 'VOC' + YEAR
 dataset_mean = (104, 117, 123)
 set_type = 'test'
 
+net_file = args.trained_model
 
 class Timer(object):
     """A simple timer."""
@@ -392,78 +393,85 @@ cachedir: Directory for caching the annotations
 
 def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
              im_size=300, thresh=0.05):
-    #num_images = len(dataset)
+
+    jobs_dir = os.path.dirname(net_file)
+    output_dir = get_output_dir(jobs_dir, os.path.basename(net_file).rstrip('.pth'))
+    det_file = os.path.join(output_dir, 'detections.pkl')
 
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
-    all_boxes = [[[] for _ in range(num_images)]
-                 for _ in range(len(labelmap)+1)]
+    if not os.path.exists(det_file):
+        all_boxes = [[[] for _ in range(num_images)]
+                     for _ in range(len(labelmap)+1)]
 
-    # timers
-    _t = {'im_detect': Timer(), 'misc': Timer()}
-    output_dir = get_output_dir('ssd300_120000', set_type)
-    det_file = os.path.join(output_dir, 'detections.pkl')
+        # timers
+        _t = {'im_detect': Timer(), 'misc': Timer()}
+        
+        #for i in range(num_images):
+        #    im, gt, h, w = dataset.pull_item(i)
 
-    #for i in range(num_images):
-    #    im, gt, h, w = dataset.pull_item(i)
-
-    for ii, (im, gt, h, w) in enumerate(dataloader):
+        for ii, (im, gt, h, w) in enumerate(dataloader):
        
-        if args.cuda:
-            x = im.cuda()
+            if args.cuda:
+                x = im.cuda()
 
-        with torch.no_grad():
-            _t['im_detect'].tic()
-            detections = net(x)
-            detect_time = _t['im_detect'].toc(average=False)
+            with torch.no_grad():
+                _t['im_detect'].tic()
+                detections = net(x)
+                detect_time = _t['im_detect'].toc(average=False)
 
-        B = detections.size(0)
-        for jj in range(B):
-            for kk in range(1, detections.size(1)):
-                dets = detections[jj, kk, :]
+            B = detections.size(0)
+            for jj in range(B):
+                for kk in range(1, detections.size(1)):
+                    dets = detections[jj, kk, :]
             
 
-                mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
-                dets = torch.masked_select(dets, mask).view(-1, 5)
-                if dets.size(0) == 0:
-                    continue
-                boxes = dets[:, 1:]
-                boxes[:, 0] *= w[jj]
-                boxes[:, 2] *= w[jj]
-                boxes[:, 1] *= h[jj]
-                boxes[:, 3] *= h[jj]
+                    mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
+                    dets = torch.masked_select(dets, mask).view(-1, 5)
+                    if dets.size(0) == 0:
+                        continue
+                    boxes = dets[:, 1:]
+                    boxes[:, 0] *= w[jj]
+                    boxes[:, 2] *= w[jj]
+                    boxes[:, 1] *= h[jj]
+                    boxes[:, 3] *= h[jj]
 
-                scores = dets[:, 0].cpu().numpy()
-                cls_dets = np.hstack((boxes.cpu().numpy(),
+                    scores = dets[:, 0].cpu().numpy()
+                    cls_dets = np.hstack((boxes.cpu().numpy(),
                                       scores[:, np.newaxis])).astype(np.float32,
                                                                  copy=False)
-                all_boxes[kk][ii*B+jj] = cls_dets
+                    all_boxes[kk][ii*B+jj] = cls_dets
 
 
-        ## skip j = 0, because it's the background class
-        #for j in range(1, detections.size(1)):
-        #    dets = detections[0, j, :]
-        #    mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
-        #    dets = torch.masked_select(dets, mask).view(-1, 5)
-        #    if dets.size(0) == 0:
-        #        continue
-        #    boxes = dets[:, 1:]
-        #    boxes[:, 0] *= w
-        #    boxes[:, 2] *= w
-        #    boxes[:, 1] *= h
-        #    boxes[:, 3] *= h
-        #    scores = dets[:, 0].cpu().numpy()
-        #    cls_dets = np.hstack((boxes.cpu().numpy(),
-        #                          scores[:, np.newaxis])).astype(np.float32,
-        #                                                         copy=False)
-        #    all_boxes[j][i] = cls_dets
+            ## skip j = 0, because it's the background class
+            #for j in range(1, detections.size(1)):
+            #    dets = detections[0, j, :]
+            #    mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
+            #    dets = torch.masked_select(dets, mask).view(-1, 5)
+            #    if dets.size(0) == 0:
+            #        continue
+            #    boxes = dets[:, 1:]
+            #    boxes[:, 0] *= w
+            #    boxes[:, 2] *= w
+            #    boxes[:, 1] *= h
+            #    boxes[:, 3] *= h
+            #    scores = dets[:, 0].cpu().numpy()
+            #    cls_dets = np.hstack((boxes.cpu().numpy(),
+            #                          scores[:, np.newaxis])).astype(np.float32,
+            #                                                         copy=False)
+            #    all_boxes[j][i] = cls_dets
 
-        if ii % 1 == 0:
-            print('im_detect: {:d}/{:d} {:.3f}s'.format(ii, len(dataloader), detect_time))
+            if ii % 1 == 0:
+                print('im_detect: {:d}/{:d} {:.3f}s'.format(ii, len(dataloader), detect_time))
 
-    with open(det_file, 'wb') as f:
-        pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+        with open(det_file, 'wb') as f:
+            pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
+
+    else:
+
+        with open(det_file, 'rb') as f:
+            all_boxes = pickle.load(f)
 
     print('Evaluating detections')
     evaluate_detections(all_boxes, output_dir, dataset)

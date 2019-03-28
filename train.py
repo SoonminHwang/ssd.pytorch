@@ -227,7 +227,7 @@ def train():
             logger.info('Saving state, iter:', iteration)
             torch.save(ssd_net.state_dict(), os.path.join( jobs_dir, 'ssd300_{:s}_iter_{:06d}.pth'.format(args.dataset, iteration)))
 
-    torch.save(ssd_net.state_dict(), os.path.join(jobs_dir, 'final_{:s}.pth'.format( args.dataset ) ) )
+    torch.save(ssd_net.state_dict(), os.path.join(jobs_dir, 'ssd300_{:s}_iter_{:06d}_final.pth'.format(args.dataset, iteration )))
 
 
 def adjust_learning_rate(optimizer, gamma, step):
