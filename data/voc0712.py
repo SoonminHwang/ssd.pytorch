@@ -26,7 +26,8 @@ VOC_CLASSES = (  # always index 0
 
 # note: if you used our download scripts, this should be right
 #VOC_ROOT = osp.join(HOME, "data/VOCdevkit/")
-VOC_ROOT = '/media/rcvlab/HDD4TB/datasets/pascal_voc/VOCdevkit'
+#VOC_ROOT = '/media/rcvlab/HDD4TB/datasets/pascal_voc/VOCdevkit'
+VOC_ROOT = '/raid/datasets/pascal_voc/'
 
 
 class VOCAnnotationTransform(object):
