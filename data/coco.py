@@ -8,7 +8,9 @@ import torchvision.transforms as transforms
 import cv2
 import numpy as np
 
-COCO_ROOT = osp.join(HOME, 'data/coco/')
+# COCO_ROOT = osp.join(HOME, 'data/coco/')
+COCO_ROOT = '/raid/datasets/mscoco/'
+
 IMAGES = 'images'
 ANNOTATIONS = 'annotations'
 COCO_API = 'PythonAPI'
@@ -44,7 +46,8 @@ class COCOAnnotationTransform(object):
     Initilized with a dictionary lookup of classnames to indexes
     """
     def __init__(self):
-        self.label_map = get_label_map(osp.join(COCO_ROOT, 'coco_labels.txt'))
+        # self.label_map = get_label_map(osp.join(COCO_ROOT, 'coco_labels.txt'))
+        self.label_map = get_label_map(osp.join('data', 'coco_labels.txt'))
 
     def __call__(self, target, width, height):
         """
@@ -71,7 +74,11 @@ class COCOAnnotationTransform(object):
 
         return res  # [[xmin, ymin, xmax, ymax, label_idx], ... ]
 
-
+COCO_API_PATH = osp.join(COCO_ROOT, 'coco', 'PythonAPI')
+import sys
+if COCO_API_PATH not in sys.path:
+    sys.path.insert(0, COCO_API_PATH)
+    
 class COCODetection(data.Dataset):
     """`MS Coco Detection <http://mscoco.org/dataset/#detections-challenge2016>`_ Dataset.
     Args:

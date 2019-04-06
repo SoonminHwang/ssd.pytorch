@@ -1,7 +1,7 @@
 from data import *
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
-from ssd_single_19x19_extraConv import build_ssd
+from ssd import build_ssd
 import os
 import sys
 import time
@@ -23,9 +23,9 @@ def str2bool(v):
 parser = argparse.ArgumentParser(
     description='Single Shot MultiBox Detector Training With Pytorch')
 train_set = parser.add_mutually_exclusive_group()
-parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO'],
+parser.add_argument('--dataset', default='COCO', choices=['VOC', 'COCO'],
                     type=str, help='VOC or COCO')
-parser.add_argument('--dataset_root', default=VOC_ROOT,
+parser.add_argument('--dataset_root', default=COCO_ROOT,
                     help='Dataset root directory path')
 parser.add_argument('--basenet', default='vgg16_reducedfc.pth',
                     help='Pretrained base model')
@@ -52,7 +52,6 @@ parser.add_argument('--exp_name', default=None,
                     help='Specify experiment name')
 parser.add_argument('--port', default=8801, type=int,
                     help='Tensorboard port')
-
 args = parser.parse_args()
 
 
@@ -65,7 +64,6 @@ args = parser.parse_args()
 #        torch.set_default_tensor_type('torch.FloatTensor')
 #else:
 #    torch.set_default_tensor_type('torch.FloatTensor')
-
 
 exp_name = args.exp_name
 
@@ -106,7 +104,7 @@ logger.addHandler(h)
 
 import subprocess, atexit
 
-def run_tensorboard( jobs_dir, port ):
+def run_tensorboard( jobs_dir, port=6006 ):
     pid = subprocess.Popen( ['tensorboard', '--logdir', jobs_dir, '--host', '0.0.0.0', '--port', str(port)] )    
     
     def cleanup():
@@ -120,9 +118,14 @@ run_tensorboard( jobs_dir, port=args.port )
 
 def train():
     if args.dataset == 'VOC':
-        cfg = voc_single_19x19_extraConv
+        cfg = voc
         dataset = VOCDetection(root=args.dataset_root,
                                transform=SSDAugmentation(cfg['min_dim'],
+                                                         MEANS))
+    elif args.dataset == 'COCO':
+        cfg = coco
+        dataset = COCODetection(root=args.dataset_root,
+                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
 
     ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])

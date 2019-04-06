@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 from layers import *
-from data import voc, coco
+from data import voc, coco, ssd512_voc
 import os
 
 
@@ -23,13 +23,21 @@ class SSD(nn.Module):
         base: VGG16 layers for input, size of either 300 or 500
         extras: extra layers that feed to multibox loc and conf layers
         head: "multibox head" consists of loc and conf conv layers
-    """
-
+    """    
     def __init__(self, phase, size, base, extras, head, num_classes):
         super(SSD, self).__init__()
         self.phase = phase
         self.num_classes = num_classes
-        self.cfg = (coco, voc)[num_classes == 21]
+        if num_classes == 21:
+            if size == 300:
+                self.cfg = voc
+            elif size == 512:
+                self.cfg = ssd512_voc
+            else:
+                raise NotImplementedError
+        else:
+            self.cfg = coco
+        # self.cfg = (coco, voc)[num_classes == 21]
         self.priorbox = PriorBox(self.cfg)
         #self.priors = Variable(self.priorbox.forward(), volatile=True)
         self.priors = self.priorbox.forward().float().cuda()
@@ -47,6 +55,9 @@ class SSD(nn.Module):
         if phase == 'test':
             self.softmax = nn.Softmax(dim=-1)
             self.detect = Detect(num_classes, 0, 200, 0.01, 0.45)
+
+    def __str__(self):
+        return __class__.__name__ + str(self.size)
 
     def forward(self, x):
         """Applies network layers and ops on input image(s) x.
@@ -109,6 +120,7 @@ class SSD(nn.Module):
                 conf.view(conf.size(0), -1, self.num_classes),
                 self.priors
             )
+
         return output
 
     def load_weights(self, base_file):
@@ -147,7 +159,7 @@ def vgg(cfg, i, batch_norm=False):
     return layers
 
 
-def add_extras(cfg, i, batch_norm=False):
+def add_extras(cfg, size, i, batch_norm=False):
     # Extra layers added to VGG for feature scaling
     layers = []
     in_channels = i
@@ -161,6 +173,10 @@ def add_extras(cfg, i, batch_norm=False):
                 layers += [nn.Conv2d(in_channels, v, kernel_size=(1, 3)[flag])]
             flag = not flag
         in_channels = v
+
+    # SSD512 need add one more Conv layer(Conv12_2)
+    if size == 512:
+        layers += [nn.Conv2d(in_channels, 256, kernel_size=4, padding=1)]
     return layers
 
 
@@ -168,6 +184,7 @@ def multibox(vgg, extra_layers, cfg, num_classes):
     loc_layers = []
     conf_layers = []
     vgg_source = [21, -2]
+    # vgg_source = [24, -2] ??
     for k, v in enumerate(vgg_source):
         loc_layers += [nn.Conv2d(vgg[v].out_channels,
                                  cfg[k] * 4, kernel_size=3, padding=1)]
@@ -184,15 +201,16 @@ def multibox(vgg, extra_layers, cfg, num_classes):
 base = {
     '300': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
             512, 512, 512],
-    '512': [],
+    '512': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
+            512, 512, 512],
 }
 extras = {
     '300': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
-    '512': [],
+    '512': [256, 'S', 512, 128, 'S', 256, 128, 'S', 256, 128, 'S', 256, 128],
 }
 mbox = {
     '300': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
-    '512': [],
+    '512': [4, 6, 6, 6, 6, 4, 4],
 }
 
 
@@ -200,11 +218,11 @@ def build_ssd(phase, size=300, num_classes=21):
     if phase != "test" and phase != "train":
         print("ERROR: Phase: " + phase + " not recognized")
         return
-    if size != 300:
-        print("ERROR: You specified size " + repr(size) + ". However, " +
-              "currently only SSD300 (size=300) is supported!")
-        return
+    # if size != 300:
+    #     print("ERROR: You specified size " + repr(size) + ". However, " +
+    #           "currently only SSD300 (size=300) is supported!")
+    #     return
     base_, extras_, head_ = multibox(vgg(base[str(size)], 3),
-                                     add_extras(extras[str(size)], 1024),
+                                     add_extras(extras[str(size)], size, 1024),
                                      mbox[str(size)], num_classes)
     return SSD(phase, size, base_, extras_, head_, num_classes)

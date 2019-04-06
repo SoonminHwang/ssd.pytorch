@@ -1,7 +1,7 @@
 from data import *
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
-from ssd_single_19x19_extraConv import build_ssd
+from ssd import build_ssd
 import os
 import sys
 import time
@@ -66,7 +66,6 @@ args = parser.parse_args()
 #else:
 #    torch.set_default_tensor_type('torch.FloatTensor')
 
-
 exp_name = args.exp_name
 
 from datetime import datetime
@@ -77,7 +76,9 @@ tensorboard_dir    = os.path.join( jobs_dir, 'tensorboardX' )
 if not os.path.exists(jobs_dir):            os.makedirs(jobs_dir)
 if not os.path.exists(tensorboard_dir):     os.makedirs(tensorboard_dir)
 
-
+## SSD512 setting from https://github.com/qijiezhao/pytorch-ssd/
+# args.lr = 3e-3
+# args.batch_size = 16
 
 import tarfile, glob
 tar = tarfile.open( os.path.join(jobs_dir, 'sources.tar'), 'w' )
@@ -106,7 +107,7 @@ logger.addHandler(h)
 
 import subprocess, atexit
 
-def run_tensorboard( jobs_dir, port ):
+def run_tensorboard( jobs_dir, port=6006 ):
     pid = subprocess.Popen( ['tensorboard', '--logdir', jobs_dir, '--host', '0.0.0.0', '--port', str(port)] )    
     
     def cleanup():
@@ -120,7 +121,8 @@ run_tensorboard( jobs_dir, port=args.port )
 
 def train():
     if args.dataset == 'VOC':
-        cfg = voc_single_19x19_extraConv
+        # cfg = voc
+        cfg = ssd512_voc
         dataset = VOCDetection(root=args.dataset_root,
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
@@ -130,6 +132,7 @@ def train():
 
     if args.cuda:
         net = torch.nn.DataParallel(ssd_net)
+        # net = ssd_net
         cudnn.benchmark = True
 
     if args.resume:

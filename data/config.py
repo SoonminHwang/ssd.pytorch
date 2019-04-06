@@ -10,6 +10,24 @@ COLORS = ((255, 0, 0, 128), (0, 255, 0, 128), (0, 0, 255, 128),
 
 MEANS = (104, 117, 123)
 
+# SSD512 Configs
+ssd512_voc = {
+
+    'feature_maps' : [64, 32, 16, 8, 4, 2, 1],
+    'min_dim' : 512,
+    'steps' : [8, 16, 32, 64, 128, 256, 512],
+    'min_sizes' : [20, 51, 133, 215, 296, 378, 460],
+    'max_sizes' : [51, 133, 215, 296, 378, 460, 542],
+    'aspect_ratios' : [[2], [2, 3], [2, 3], [2, 3], [2, 3], [2], [2]],
+    'variance' : [0.1, 0.2],
+    'clip' : True,
+    'name' : 'voc_ssd512_v2',
+
+    'num_classes': 21,
+    'lr_steps': (80000, 100000, 120000),
+    'max_iter': 120000   
+}
+
 # SSD300 CONFIGS
 voc_single_19x19_extraConv = {
     'num_classes': 21,
