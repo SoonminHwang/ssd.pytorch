@@ -316,22 +316,39 @@ class TopDownNet(nn.Module):
         
         num_hs = len(feats_spatial_resol)
 
-        ##### 0. Projection: match channels
-        proj_params = {in_planes, out_planes=inter_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
-        proj = [ BasicConv(proj_params) for _ in range(num_hs) ]
+        ##### 0. Projection: match channels (lateral)
+        proj_params = {in_planes=inter_planes, out_planes=inter_planes, \
+                        kernel_size=1, stride=1, padding=0, dilation=1, \
+                        groups=1, relu=False, bn=True, bias=False}
+        proj = list()
+        for ii in range(num_hs):
+            proj_params['in_planes'] = feats_channel[ii-1]
+            proj.append( BasicConv(proj_params) )        
+        # proj = [ BasicConv(proj_params) for _ in range(num_hs) ]
 
         ##### 1. Top-down
         # upsample_type: 'deconv'
-        topdown_params = {upsample_type='deconv', in_planes, out_planes, kernel_size, stride=1, padding=0, output_padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}        
-        # # upsample_type: 'bilinear'
-        # topdown_params = {upsample_type='bilinear', out_planes, size, scale_factor=None, mode='bilinear', relu=True, bn=True}        
-        # # upsample_type: 'bilinear+conv'
-        # topdown_params = {upsample_type='bilinear+conv', size, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
-        topdown = [ BasicTopDown(topdown_params) for _ in range(num_hs) ]
+        topdown_params = {upsample_type='deconv', in_planes=inter_planes, \
+                        out_planes=inter_planes, kernel_size=3, stride=2, \
+                        padding=1, output_padding=0, dilation=1, groups=1, relu=False}
+        topdown = list()
+        for ii in range(num_hs-1:)            
+            if feats_spatial_resol[ii+1] % feats_spatial_resol[ii] == 0:                
+                topdown_params['output_padding'] = 1
+            else:
+                topdown_params['output_padding'] = 0
 
-        ##### 2. Lateral
-        lateral_params = {in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
-        lateral = [ BasicConv(lateral_params) for _ in range(num_hs) ]
+            topdown.append( BasicTopDown(topdown_params) )
+
+        # # # upsample_type: 'bilinear'
+        # # topdown_params = {upsample_type='bilinear', out_planes, size, scale_factor=None, mode='bilinear', relu=True, bn=True}        
+        # # # upsample_type: 'bilinear+conv'
+        # # topdown_params = {upsample_type='bilinear+conv', size, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
+        # topdown = [ BasicTopDown(topdown_params) for _ in range(num_hs) ]
+
+        # ##### 2. Lateral
+        # lateral_params = {in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
+        # lateral = [ BasicConv(lateral_params) for _ in range(num_hs) ]
 
         ##### 3. Fusion (combining top-down and lateral paths)
         fusion_params = {fusion_type='sum'}
@@ -341,13 +358,15 @@ class TopDownNet(nn.Module):
         
 
         ##### 4. Extra conv. for multi-scale detection head
-        extraconv_params = {fusion_type='sum', in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False}
+        extraconv_params = {in_planes=inter_planes, out_planes=inter_planes, \
+                            kernel_size=3, stride=1, padding=1, dilation=1, \
+                            groups=1, relu=True, bn=True, bias=False}
         extraconv = [ BasicConv(extraconv_params) for _ in range(num_hs) ]
         
 
         self.proj_layers = nn.ModuleList(proj)
         self.topdown_layers = nn.ModuleList(topdown)
-        self.lateral_layers = nn.ModuleList(lateral)
+        # self.lateral_layers = nn.ModuleList(lateral)
         self.fusion_layers = nn.ModuleList(fusion)
         self.extra_layers = nn.ModuleList(extraconv)
 
@@ -363,14 +382,14 @@ class TopDownNet(nn.Module):
         sources = list()
         for ii, hs_cur in enumerate(reversed(feats)):
             
-            hs_cur = self.proj_layers[ii-1](hs_cur)
+            from_cur = self.proj_layers[ii](hs_cur)
 
             if ii == 0:
-                hs_top = hs_cur
+                hs_top = from_cur
                 continue
 
             from_top = self.topdown_layers[ii-1](hs_top)
-            from_cur = self.lateral_layers[ii-1](hs_cur)
+            # from_cur = self.lateral_layers[ii-1](hs_cur)
 
             hs_top = self.fusion_layers[ii-1](from_top, from_cur)
 
