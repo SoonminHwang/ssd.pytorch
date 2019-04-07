@@ -1,5 +1,11 @@
 import torch.nn as nn
 import torch.utils.model_zoo as model_zoo
+from data import voc_stairnet300
+
+import torch
+import torch.nn.functional as F
+from layers import *
+import os
 
 
 __all__ = ['StairNet', 'stairnet300']
@@ -35,13 +41,14 @@ class StairNet(nn.Module):
         extras: extra layers that feed to multibox loc and conf layers
         head: "multibox head" consists of loc and conf conv layers
     """    
-    def __init__(self, phase, size, base, extras, head, num_classes):
+    def __init__(self, phase, size, base, extras, head, num_classes, inter_planes=256):
         super(StairNet, self).__init__()
         self.phase = phase
         self.num_classes = num_classes
 
         # Use the same default anchors to original SSD300
-        self.cfg = (coco, voc)[num_classes == 21]        
+        #self.cfg = (coco, voc)[num_classes == 21]        
+        self.cfg = voc_stairnet300
         self.priorbox = PriorBox(self.cfg)
         with torch.no_grad():
             self.priors = self.priorbox.forward().float().cuda()
@@ -53,8 +60,8 @@ class StairNet(nn.Module):
         self.L2Norm = L2Norm(512, 20)
         self.extras = nn.ModuleList(extras)
 
-        inter_planes = 256
-        self.topdown = TopDownNet( reversed(s_cfg[str(size)]), reversed(ch_cfg[str(size)]), inter_planes)
+        
+        self.topdown = TopDownNet( s_cfg[str(size)][::-1], ch_cfg[str(size)][::-1], inter_planes)
         self.loc = nn.ModuleList(head[0])
         self.conf = nn.ModuleList(head[1])
 
@@ -115,7 +122,7 @@ class StairNet(nn.Module):
 
         loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
         conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
-        if self.phase == "test":
+        if self.phase == "test":            
             output = self.detect(
                 loc.view(loc.size(0), -1, 4),                   # loc preds
                 self.softmax(conf.view(conf.size(0), -1,
@@ -184,19 +191,29 @@ def add_extras(cfg, i, batch_norm=False):
     return layers
 
 
-def multibox(vgg, extra_layers, cfg, num_classes):
+def multibox(vgg, extra_layers, cfg, num_classes, inter_planes):
     loc_layers = []
     conf_layers = []
     vgg_source = [21, -2]
+    # for k, v in enumerate(vgg_source):
+    #     loc_layers += [nn.Conv2d(vgg[v].out_channels,
+    #                              cfg[k] * 4, kernel_size=3, padding=1)]
+    #     conf_layers += [nn.Conv2d(vgg[v].out_channels,
+    #                     cfg[k] * num_classes, kernel_size=3, padding=1)]
+    # for k, v in enumerate(extra_layers[1::2], 2):
+    #     loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
+    #                              * 4, kernel_size=3, padding=1)]
+    #     conf_layers += [nn.Conv2d(v.out_channels, cfg[k]
+    #                               * num_classes, kernel_size=3, padding=1)]
     for k, v in enumerate(vgg_source):
-        loc_layers += [nn.Conv2d(vgg[v].out_channels,
+        loc_layers += [nn.Conv2d(inter_planes,
                                  cfg[k] * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(vgg[v].out_channels,
+        conf_layers += [nn.Conv2d(inter_planes,
                         cfg[k] * num_classes, kernel_size=3, padding=1)]
     for k, v in enumerate(extra_layers[1::2], 2):
-        loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
+        loc_layers += [nn.Conv2d(inter_planes, cfg[k]
                                  * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(v.out_channels, cfg[k]
+        conf_layers += [nn.Conv2d(inter_planes, cfg[k]
                                   * num_classes, kernel_size=3, padding=1)]
     return vgg, extra_layers, (loc_layers, conf_layers)
 
@@ -224,10 +241,11 @@ def build_stairnet(phase, size=300, num_classes=21):
         print("ERROR: You specified size " + repr(size) + ". However, " +
               "currently only SSD300 (size=300) is supported!")
         return
+    inter_planes = voc_stairnet300['inter_planes']
     base_, extras_, head_ = multibox(vgg(base[str(size)], 3),
                                      add_extras(extras[str(size)], 1024),
-                                     mbox[str(size)], num_classes)
-    return StairNet(phase, size, base_, extras_, head_, num_classes)
+                                     mbox[str(size)], num_classes, inter_planes)
+    return StairNet(phase, size, base_, extras_, head_, num_classes, inter_planes)
 
 ##########################################################################################
 ##########################################################################################
@@ -253,27 +271,32 @@ class BasicConv(nn.Module):
 ### Topdown module
 class BasicTopDown(nn.Module):
     '''Basic convolution block for top-down connection'''
-    def __init__(self, in_planes, out_planes, params):
+    def __init__(self, params):
         super(BasicTopDown, self).__init__()        
 
-        locals().update(params)
-        
-        self.out_channels = out_planes
-        
-        if upsample_type.lower() == 'deconv':
+        for k, v in params.items():
+            setattr(self, k, v)
+
+        if self.upsample_type.lower() == 'deconv':
+            # in_planes, out_planes, kernel_size, stride, padding, output_padding, dilation, groups, bias,             
             ''' params dictionary should contain the following keys: in_planes, out_planes, kernel_size, etc.'''                        
-            self.upsample = nn.ConvTranspose2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, output_padding=output_padding,
-                                        dilation=dilation, groups=groups, bias=bias)
-        elif upsample_type.lower() == 'bilinear':            
-            self.upsample = nn.Upsample(size=size, scale_factor=scale_factor, mode=mode)
-        elif upsample_type.lower() == 'bilinear+conv':
+            self.upsample = nn.ConvTranspose2d(self.in_planes, self.out_planes, 
+                        kernel_size=self.kernel_size, stride=self.stride, padding=self.padding, 
+                        output_padding=self.output_padding, dilation=self.dilation, groups=self.groups, bias=self.bias)
+        
+        elif self.upsample_type.lower() == 'bilinear':            
+            self.upsample = nn.Upsample(size=self.size, scale_factor=self.scale_factor, mode=self.mode)
+        
+        elif self.upsample_type.lower() == 'bilinear+conv':
             self.upsample == nn.Sequential(
-                nn.Upsample(size=size, mode='bilinear'),
-                nn.Conv2d(inplanes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
+                nn.Upsample(size=self.size, mode='bilinear'),
+                nn.Conv2d(self.inplanes, self.out_planes, 
+                        kernel_size=self.kernel_size, stride=self.stride, padding=self.padding, 
+                        dilation=self.dilation, groups=self.groups, bias=self.bias)
             )
 
-        self.bn = nn.BatchNorm2d(out_planes, eps=1e-5, momentum=0.01, affine=True) if bn else None
-        self.relu = nn.ReLU(inplace=True) if relu else None
+        self.bn = nn.BatchNorm2d(self.out_planes, eps=1e-5, momentum=0.01, affine=True) if self.bn else None
+        self.relu = nn.ReLU(inplace=True) if self.relu else None
 
     def forward(self, x):
         x = self.upsample(x)
@@ -317,26 +340,37 @@ class TopDownNet(nn.Module):
         num_hs = len(feats_spatial_resol)
 
         ##### 0. Projection: match channels (lateral)
-        proj_params = {in_planes=inter_planes, out_planes=inter_planes, \
-                        kernel_size=1, stride=1, padding=0, dilation=1, \
-                        groups=1, relu=False, bn=True, bias=False}
+        proj_params = dict(in_planes=inter_planes, out_planes=inter_planes,
+                        kernel_size=1, stride=1, padding=0, dilation=1,
+                        groups=1, relu=False, bn=True, bias=False)
         proj = list()
         for ii in range(num_hs):
-            proj_params['in_planes'] = feats_channel[ii-1]
-            proj.append( BasicConv(proj_params) )        
+            proj_params['in_planes'] = feats_channel[ii]
+            proj.append( BasicConv(**proj_params) )        
         # proj = [ BasicConv(proj_params) for _ in range(num_hs) ]
 
         ##### 1. Top-down
         # upsample_type: 'deconv'
-        topdown_params = {upsample_type='deconv', in_planes=inter_planes, \
-                        out_planes=inter_planes, kernel_size=3, stride=2, \
-                        padding=1, output_padding=0, dilation=1, groups=1, relu=False}
+        topdown_params = dict(upsample_type='deconv', in_planes=inter_planes, \
+                        out_planes=inter_planes, kernel_size=3, stride=1, \
+                        padding=0, output_padding=0, dilation=1, groups=1, bias=False, 
+                        relu=False, bn=True)
+
         topdown = list()
-        for ii in range(num_hs-1:)            
-            if feats_spatial_resol[ii+1] % feats_spatial_resol[ii] == 0:                
-                topdown_params['output_padding'] = 1
+        for ii in range(num_hs-1):            
+            if ii == 0:
+                if feats_spatial_resol[ii+1] // feats_spatial_resol[ii] == 2:
+                    topdown_params['padding'] = 1
+                else:
+                    topdown_params['padding'] = 0
             else:
-                topdown_params['output_padding'] = 0
+                topdown_params['kernel_size'] = 3
+                topdown_params['stride'] = 2
+                topdown_params['padding'] = 1
+                if feats_spatial_resol[ii+1] % feats_spatial_resol[ii] == 0:                
+                    topdown_params['output_padding'] = 1
+                else:
+                    topdown_params['output_padding'] = 0
 
             topdown.append( BasicTopDown(topdown_params) )
 
@@ -351,17 +385,17 @@ class TopDownNet(nn.Module):
         # lateral = [ BasicConv(lateral_params) for _ in range(num_hs) ]
 
         ##### 3. Fusion (combining top-down and lateral paths)
-        fusion_params = {fusion_type='sum'}
+        fusion_params = dict(fusion_type='sum')
         # fusion_params = {fusion_type='prod'}
         # fusion_params = {fusion_type='max'}
-        fusion = [ BasicFusion(fusion_params) for _ in range(num_hs) ]
+        fusion = [ BasicFusion(**fusion_params) for _ in range(num_hs) ]
         
 
         ##### 4. Extra conv. for multi-scale detection head
-        extraconv_params = {in_planes=inter_planes, out_planes=inter_planes, \
+        extraconv_params = dict(in_planes=inter_planes, out_planes=inter_planes, \
                             kernel_size=3, stride=1, padding=1, dilation=1, \
-                            groups=1, relu=True, bn=True, bias=False}
-        extraconv = [ BasicConv(extraconv_params) for _ in range(num_hs) ]
+                            groups=1, relu=True, bn=True, bias=False)
+        extraconv = [ BasicConv(**extraconv_params) for _ in range(num_hs) ]
         
 
         self.proj_layers = nn.ModuleList(proj)
@@ -386,6 +420,7 @@ class TopDownNet(nn.Module):
 
             if ii == 0:
                 hs_top = from_cur
+                # sources.insert( 0, self.extra_layers[ii](hs_top) )
                 continue
 
             from_top = self.topdown_layers[ii-1](hs_top)
@@ -398,25 +433,25 @@ class TopDownNet(nn.Module):
         return sources
 
 
-def resnet18(pretrained=False, **kwargs):
-    """Constructs a ResNet-18 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
-    model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
-    if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet18']))
-    return model
+# def resnet18(pretrained=False, **kwargs):
+#     """Constructs a ResNet-18 model.
+#     Args:
+#         pretrained (bool): If True, returns a model pre-trained on ImageNet
+#     """
+#     model = ResNet(BasicBlock, [2, 2, 2, 2], **kwargs)
+#     if pretrained:
+#         model.load_state_dict(model_zoo.load_url(model_urls['resnet18']))
+#     return model
 
 
-def resnet34(pretrained=False, **kwargs):
-    """Constructs a ResNet-34 model.
-    Args:
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-    """
-    model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
-    if pretrained:
-        model.load_state_dict(model_zoo.load_url(model_urls['resnet34']))
-    return model
+# def resnet34(pretrained=False, **kwargs):
+#     """Constructs a ResNet-34 model.
+#     Args:
+#         pretrained (bool): If True, returns a model pre-trained on ImageNet
+#     """
+#     model = ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
+#     if pretrained:
+#         model.load_state_dict(model_zoo.load_url(model_urls['resnet34']))
+#     return model
 
 

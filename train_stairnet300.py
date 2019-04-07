@@ -1,7 +1,7 @@
 from data import *
 from utils.augmentations import SSDAugmentation
 from layers.modules import MultiBoxLoss
-from models.stairnet import build_net
+from models.stairnet import build_stairnet
 import os
 import sys
 import time
@@ -126,11 +126,12 @@ def train():
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
 
-    ssd_net = build_net('train', cfg['min_dim'], cfg['num_classes'])
+    ssd_net = build_stairnet('train', cfg['min_dim'], cfg['num_classes'])
     net = ssd_net
 
     if args.cuda:
         net = torch.nn.DataParallel(ssd_net)
+        # net = ssd_net
         cudnn.benchmark = True
 
     if args.resume:
@@ -231,7 +232,7 @@ def train():
             loss_acc_cls = 0.0
 
         if iteration != 0 and iteration % 5000 == 0:
-            logger.info('Saving state, iter:', iteration)
+            logger.info('Saving state, iter: {:}'.format(iteration))
             torch.save(ssd_net.state_dict(), os.path.join( jobs_dir, 'ssd300_{:s}_iter_{:06d}.pth'.format(args.dataset, iteration)))
 
     torch.save(ssd_net.state_dict(), os.path.join(jobs_dir, 'ssd300_{:s}_iter_{:06d}_final.pth'.format(args.dataset, iteration )))
@@ -248,14 +249,11 @@ def adjust_learning_rate(optimizer, gamma, step):
         param_group['lr'] = lr
 
 
-def xavier(param):
-    init.xavier_uniform(param)
-
-
 def weights_init(m):
     if isinstance(m, nn.Conv2d):
-        xavier(m.weight.data)
-        m.bias.data.zero_()
+        init.xavier_uniform(m.weight.data)
+        if m.bias is not None:
+            m.bias.data.zero_()
 
 if __name__ == '__main__':
     train()
