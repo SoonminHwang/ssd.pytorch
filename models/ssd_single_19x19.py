@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from layers import *
 from data import coco
-from data import voc_single_19x19_resolx2 as voc
+from data import voc_single_19x19 as voc
 import os
 
 
@@ -47,8 +47,8 @@ class SSD(nn.Module):
 
         if phase == 'test':
             self.softmax = nn.Softmax(dim=-1)
-            #self.detect = Detect(num_classes, 0, 200, 0.01, 0.45)
-            self.detect = Detect(num_classes, 0, 200, 0.1, 0.45)
+            self.detect = Detect(num_classes, 0, 200, 0.01, 0.45)
+            # self.detect = Detect(num_classes, 0, 200, 0.1, 0.45)
 
     def forward(self, x):
         """Applies network layers and ops on input image(s) x.
@@ -148,11 +148,6 @@ def vgg(cfg, i, batch_norm=False):
             else:
                 layers += [conv2d, nn.ReLU(inplace=True)]
             in_channels = v
-
-    layers[23].kernel_size = 3
-    layers[23].stride = 1
-    layers[23].padding = 1
-
     pool5 = nn.MaxPool2d(kernel_size=3, stride=1, padding=1)
     conv6 = nn.Conv2d(512, 1024, kernel_size=3, padding=6, dilation=6)
     conv7 = nn.Conv2d(1024, 1024, kernel_size=1)

@@ -14,6 +14,7 @@ from data import VOC_CLASSES as labelmap
 import torch.utils.data as data
 
 from ssd import build_ssd
+from models import build_ssd, build_ssd_19x19, build_stairnet, build_stairnet_38x38, build_refinedet
 
 import sys
 import os
@@ -29,10 +30,8 @@ else:
     import xml.etree.ElementTree as ET
 
 
-def str2bool(v):
-    return v.lower() in ("yes", "true", "t", "1")
-
-
+# def str2bool(v):
+#     return v.lower() in ("yes", "true", "t", "1")
 
 def detection_collate(batch):
     """Custom collate fn for dealing with batches of images that have a different
@@ -65,31 +64,37 @@ parser = argparse.ArgumentParser(
 parser.add_argument('--trained_model',
                     default='weights/ssd300_mAP_77.43_v2.pth', type=str,
                     help='Trained state_dict file path to open')
-parser.add_argument('--save_folder', default='eval/', type=str,
-                    help='File path to save results')
+# parser.add_argument('--save_folder', default='eval/', type=str,
+#                     help='File path to save results')
 parser.add_argument('--confidence_threshold', default=0.01, type=float,
                     help='Detection confidence threshold')
 parser.add_argument('--top_k', default=5, type=int,
                     help='Further restrict the number of predictions to parse')
-parser.add_argument('--cuda', default=True, type=str2bool,
+parser.add_argument('--input_size', default=300, type=int,
+                    help='Size of the input image')
+# parser.add_argument('--cuda', default=True, type=str2bool,
+#                     help='Use cuda to train model')
+parser.add_argument('--cuda', default=True, action='store_true',
                     help='Use cuda to train model')
 parser.add_argument('--voc_root', default=VOC_ROOT,
                     help='Location of VOC root directory')
-parser.add_argument('--cleanup', default=True, type=str2bool,
-                    help='Cleanup and remove results files following eval')
+# parser.add_argument('--cleanup', default=True, type=str2bool,
+#                     help='Cleanup and remove results files following eval')
 parser.add_argument('--batch_size', default=8, type=int,
                     help='Further restrict the number of predictions to parse')
+parser.add_argument('--set_type', default='test', type=str, choices=['test', 'val', 'train'],
+                    help='Specify subset type to evaluate')
+parser.add_argument('--net_type', default='ssd', type=str,
+                    help='Specify subset type to evaluate')
 
 args = parser.parse_args()
 
-if not os.path.exists(args.save_folder):
-    os.mkdir(args.save_folder)
 
 if torch.cuda.is_available():
     if args.cuda:
         torch.set_default_tensor_type('torch.cuda.FloatTensor')
     if not args.cuda:
-        print("WARNING: It looks like you have a CUDA device, but aren't using \
+        logger.info("WARNING: It looks like you have a CUDA device, but aren't using \
               CUDA.  Run with --cuda for optimal eval speed.")
         torch.set_default_tensor_type('torch.FloatTensor')
 else:
@@ -102,9 +107,29 @@ imgsetpath = os.path.join(args.voc_root, 'VOC2007', 'ImageSets',
 YEAR = '2007'
 devkit_path = args.voc_root + 'VOC' + YEAR
 dataset_mean = (104, 117, 123)
-set_type = 'test'
-
+set_type = args.set_type
 net_file = args.trained_model
+jobs_dir = os.path.dirname(net_file)
+
+import logging
+import logging.handlers
+
+fmt = logging.Formatter('[%(levelname)s][%(asctime)s][%(name)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+
+logger = logging.getLogger('eval')
+logger.setLevel(logging.INFO)
+
+h = logging.StreamHandler()
+h.setFormatter(fmt)
+logger.addHandler(h)
+
+log_dir = os.path.join(jobs_dir, args.set_type + '_' + os.path.basename(net_file).rstrip('.pth'))
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+h = logging.FileHandler( os.path.join(log_dir, 'log.txt'))
+h.setFormatter(fmt)
+logger.addHandler(h)
 
 class Timer(object):
     """A simple timer."""
@@ -166,7 +191,7 @@ def get_output_dir(name, phase):
 def get_voc_results_file_template(image_set, cls):
     # VOCdevkit/VOC2007/results/det_test_aeroplane.txt
     filename = 'det_' + image_set + '_%s.txt' % (cls)
-    filedir = os.path.join(devkit_path, 'results')
+    filedir = os.path.join(jobs_dir, 'results')
     if not os.path.exists(filedir):
         os.makedirs(filedir)
     path = os.path.join(filedir, filename)
@@ -175,7 +200,7 @@ def get_voc_results_file_template(image_set, cls):
 
 def write_voc_results_file(all_boxes, dataset):
     for cls_ind, cls in enumerate(labelmap):
-        print('Writing {:s} VOC results file'.format(cls))
+        logger.info('Writing {:s} VOC results file'.format(cls))
         filename = get_voc_results_file_template(set_type, cls)
         with open(filename, 'wt') as f:
             for im_ind, index in enumerate(dataset.ids):
@@ -191,11 +216,11 @@ def write_voc_results_file(all_boxes, dataset):
 
 
 def do_python_eval(output_dir='output', use_07=True):
-    cachedir = os.path.join(devkit_path, 'annotations_cache')
+    cachedir = os.path.join(jobs_dir, 'annotations_cache')
     aps = []
     # The PASCAL VOC metric changed in 2010
     use_07_metric = use_07
-    print('VOC07 metric? ' + ('Yes' if use_07_metric else 'No'))
+    logger.info('VOC07 metric? ' + ('Yes' if use_07_metric else 'No'))
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
     for i, cls in enumerate(labelmap):
@@ -204,21 +229,21 @@ def do_python_eval(output_dir='output', use_07=True):
            filename, annopath, imgsetpath.format(set_type), cls, cachedir,
            ovthresh=0.5, use_07_metric=use_07_metric)
         aps += [ap]
-        print('AP for {} = {:.4f}'.format(cls, ap))
+        logger.info('AP for {} = {:.4f}'.format(cls, ap))
         with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
             pickle.dump({'rec': rec, 'prec': prec, 'ap': ap}, f)
-    print('Mean AP = {:.4f}'.format(np.mean(aps)))
-    print('~~~~~~~~')
-    print('Results:')
+    logger.info('Mean AP = {:.4f}'.format(np.mean(aps)))
+    logger.info('~~~~~~~~')
+    logger.info('Results:')
     for ap in aps:
-        print('{:.3f}'.format(ap))
-    print('{:.3f}'.format(np.mean(aps)))
-    print('~~~~~~~~')
-    print('')
-    print('--------------------------------------------------------------')
-    print('Results computed with the **unofficial** Python eval code.')
-    print('Results should be very close to the official MATLAB eval code.')
-    print('--------------------------------------------------------------')
+        logger.info('{:.3f}'.format(ap))
+    logger.info('{:.3f}'.format(np.mean(aps)))
+    logger.info('~~~~~~~~')
+    logger.info('')
+    logger.info('--------------------------------------------------------------')
+    logger.info('Results computed with the **unofficial** Python eval code.')
+    logger.info('Results should be very close to the official MATLAB eval code.')
+    logger.info('--------------------------------------------------------------')
 
 
 def voc_ap(rec, prec, use_07_metric=True):
@@ -297,13 +322,13 @@ cachedir: Directory for caching the annotations
         recs = {}
         for i, imagename in enumerate(imagenames):
             recs[imagename] = parse_rec(annopath % (imagename))
-            if i % 100 == 0:
-                print('Reading annotation for {:d}/{:d}'.format(
-                   i + 1, len(imagenames)))
-        # save
-        print('Saving cached annotations to {:s}'.format(cachefile))
-        with open(cachefile, 'wb') as f:
-            pickle.dump(recs, f)
+            # if i % 100 == 0:
+            #     logger.info('Reading annotation for {:d}/{:d}'.format(
+            #        i + 1, len(imagenames)))
+        # # save
+        # logger.info('Saving cached annotations to {:s}'.format(cachefile))
+        # with open(cachefile, 'wb') as f:
+        #     pickle.dump(recs, f)
     else:
         # load
         with open(cachefile, 'rb') as f:
@@ -391,11 +416,11 @@ cachedir: Directory for caching the annotations
     return rec, prec, ap
 
 
-def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
+def test_net(net, cuda, dataloader, transform, top_k, num_images,
              im_size=300, thresh=0.05):
 
     jobs_dir = os.path.dirname(net_file)
-    output_dir = get_output_dir(jobs_dir, os.path.basename(net_file).rstrip('.pth'))
+    output_dir = get_output_dir(jobs_dir, args.set_type + '_' + os.path.basename(net_file).rstrip('.pth'))
     det_file = os.path.join(output_dir, 'detections.pkl')
 
     # all detections are collected into:
@@ -407,9 +432,6 @@ def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
 
         # timers
         _t = {'im_detect': Timer(), 'misc': Timer()}
-        
-        #for i in range(num_images):
-        #    im, gt, h, w = dataset.pull_item(i)
 
         for ii, (im, gt, h, w) in enumerate(dataloader):
        
@@ -442,28 +464,10 @@ def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
                                       scores[:, np.newaxis])).astype(np.float32,
                                                                  copy=False)
                     all_boxes[kk][ii*B+jj] = cls_dets
-
-
-            ## skip j = 0, because it's the background class
-            #for j in range(1, detections.size(1)):
-            #    dets = detections[0, j, :]
-            #    mask = dets[:, 0].gt(0.).expand(5, dets.size(0)).t()
-            #    dets = torch.masked_select(dets, mask).view(-1, 5)
-            #    if dets.size(0) == 0:
-            #        continue
-            #    boxes = dets[:, 1:]
-            #    boxes[:, 0] *= w
-            #    boxes[:, 2] *= w
-            #    boxes[:, 1] *= h
-            #    boxes[:, 3] *= h
-            #    scores = dets[:, 0].cpu().numpy()
-            #    cls_dets = np.hstack((boxes.cpu().numpy(),
-            #                          scores[:, np.newaxis])).astype(np.float32,
-            #                                                         copy=False)
-            #    all_boxes[j][i] = cls_dets
+    
 
             if ii % 1 == 0:
-                print('im_detect: {:d}/{:d} {:.3f}s'.format(ii, len(dataloader), detect_time))
+                logger.info('im_detect: {:d}/{:d} {:.3f}s'.format(ii, len(dataloader), detect_time))
 
         with open(det_file, 'wb') as f:
             pickle.dump(all_boxes, f, pickle.HIGHEST_PROTOCOL)
@@ -473,7 +477,7 @@ def test_net(save_folder, net, cuda, dataloader, transform, top_k, num_images,
         with open(det_file, 'rb') as f:
             all_boxes = pickle.load(f)
 
-    print('Evaluating detections')
+    logger.info('Evaluating detections')
     evaluate_detections(all_boxes, output_dir, dataset)
 
 
@@ -485,13 +489,32 @@ def evaluate_detections(box_list, output_dir, dataset):
 if __name__ == '__main__':
     # load net
     num_classes = len(labelmap) + 1                      # +1 for background
-    net = build_ssd('test', 300, num_classes)            # initialize SSD
+
+    if args.net_type.lower() == 'ssd':
+        net = build_ssd('test', args.input_size, num_classes)    
+    elif args.net_type.lower() == 'ssd_19x19':
+        net = build_ssd_19x19('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'ssd_19x19_resolx2':
+        net = build_ssd_19x19_resolx2('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'ssd_19x19_extraConv':
+        net = build_ssd_19x19_extraConv('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'ssd_38x38':
+        net = build_ssd_38x38('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'stairnet':
+        net = build_stairnet('test', args.input_size, num_classes)    
+    elif args.net_type.lower() == 'stairnet_38x38':
+        net = build_stairnet_38x38('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'refinedet':
+        net = build_refinedet('test', args.input_size, num_classes)
+    else:
+        raise NotImplementedError
+
     net.load_state_dict(torch.load(args.trained_model))
     net.eval()
-    print('Finished loading model!')
+    logger.info('Finished loading model!')
     # load data
     dataset = VOCDetection(args.voc_root, [('2007', set_type)],
-                           BaseTransform(300, dataset_mean),
+                           BaseTransform(args.input_size, dataset_mean),
                            VOCAnnotationTransform())
 
     num_images = len(dataset)
@@ -504,6 +527,6 @@ if __name__ == '__main__':
         cudnn.benchmark = True
 
     # evaluation
-    test_net(args.save_folder, net, args.cuda, dataloader,
+    test_net(net, args.cuda, dataloader,
              BaseTransform(net.size, dataset_mean), args.top_k, num_images, 300,
              thresh=args.confidence_threshold)

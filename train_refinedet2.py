@@ -1,7 +1,9 @@
 from data import *
 from utils.augmentations import SSDAugmentation
-from layers.modules import MultiBoxLoss
-from ssd import build_ssd
+# from layers.modules import MultiBoxLoss
+# from models.stairnet import build_stairnet
+from layers.modules import RefineDetMultiBoxLoss
+from models.refinedet import build_refinedet
 import os
 import sys
 import time
@@ -27,6 +29,8 @@ parser.add_argument('--dataset', default='VOC', choices=['VOC', 'COCO'],
                     type=str, help='VOC or COCO')
 parser.add_argument('--dataset_root', default=VOC_ROOT,
                     help='Dataset root directory path')
+parser.add_argument('--input_size', default='300', choices=['300', '320', '512'],
+                    type=str, help='RefineDet300 or RefineDet320 or RefineDet512')
 parser.add_argument('--basenet', default='vgg16_reducedfc.pth',
                     help='Pretrained base model')
 parser.add_argument('--batch_size', default=32, type=int,
@@ -50,21 +54,21 @@ parser.add_argument('--gamma', default=0.1, type=float,
 
 parser.add_argument('--exp_name', default=None,
                     help='Specify experiment name')
-parser.add_argument('--port', default=8801, type=int,
+parser.add_argument('--port', default=8821, type=int,
                     help='Tensorboard port')
 
 args = parser.parse_args()
 
 
-#if torch.cuda.is_available():
-#    if args.cuda:
-#        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-#    if not args.cuda:
-#        print("WARNING: It looks like you have a CUDA device, but aren't " +
-#              "using CUDA.\nRun with --cuda for optimal training speed.")
-#        torch.set_default_tensor_type('torch.FloatTensor')
-#else:
-#    torch.set_default_tensor_type('torch.FloatTensor')
+if torch.cuda.is_available():
+   if args.cuda:
+       torch.set_default_tensor_type('torch.cuda.FloatTensor')
+   if not args.cuda:
+       print("WARNING: It looks like you have a CUDA device, but aren't " +
+             "using CUDA.\nRun with --cuda for optimal training speed.")
+       torch.set_default_tensor_type('torch.FloatTensor')
+else:
+   torch.set_default_tensor_type('torch.FloatTensor')
 
 
 exp_name = args.exp_name
@@ -121,25 +125,28 @@ run_tensorboard( jobs_dir, port=args.port )
 
 def train():
     if args.dataset == 'VOC':
-        cfg = voc
+        # cfg = voc_stairnet300
+        cfg = voc_refinedet[args.input_size]
         dataset = VOCDetection(root=args.dataset_root,
                                transform=SSDAugmentation(cfg['min_dim'],
                                                          MEANS))
 
-    ssd_net = build_ssd('train', cfg['min_dim'], cfg['num_classes'])
-    net = ssd_net
+    # ssd_net = build_stairnet('train', cfg['min_dim'], cfg['num_classes'])
+    refinedet_net = build_refinedet('train', cfg['min_dim'], cfg['num_classes'])
+    net = refinedet_net
 
     if args.cuda:
-        net = torch.nn.DataParallel(ssd_net)
+        # net = torch.nn.DataParallel(refinedet_net)
+        net = refinedet_net
         cudnn.benchmark = True
 
     if args.resume:
         print('Resuming training, loading {}...'.format(args.resume))
-        ssd_net.load_weights(args.resume)
+        refinedet_net.load_weights(args.resume)
     else:
         vgg_weights = torch.load('weights/' + args.basenet)
         print('Loading base network...')
-        ssd_net.vgg.load_state_dict(vgg_weights)
+        refinedet_net.vgg.load_state_dict(vgg_weights)
 
     if args.cuda:
         net = net.cuda()
@@ -147,24 +154,45 @@ def train():
     if not args.resume:
         print('Initializing weights...')
         # initialize newly added layers' weights with xavier method
-        ssd_net.extras.apply(weights_init)
-        ssd_net.loc.apply(weights_init)
-        ssd_net.conf.apply(weights_init)
+        refinedet_net.extras.apply(weights_init)
+        refinedet_net.arm_loc.apply(weights_init)
+        refinedet_net.arm_conf.apply(weights_init)
+        refinedet_net.odm_loc.apply(weights_init)
+        refinedet_net.odm_conf.apply(weights_init)
+        #refinedet_net.tcb.apply(weights_init)
+        refinedet_net.tcb0.apply(weights_init)
+        refinedet_net.tcb1.apply(weights_init)
+        refinedet_net.tcb2.apply(weights_init)
 
     optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
                           weight_decay=args.weight_decay)
-    criterion = MultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5,
+    # criterion = MultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5,
+    #                          False, args.cuda)
+    arm_criterion = RefineDetMultiBoxLoss(2, 0.5, True, 0, True, 3, 0.5,
                              False, args.cuda)
+    odm_criterion = RefineDetMultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5,
+                             False, args.cuda, use_ARM=True)
 
     net.train()
     # loss counters
-    loc_loss = 0
-    conf_loss = 0
+    arm_loc_loss = 0
+    arm_conf_loss = 0
+    odm_loc_loss = 0
+    odm_conf_loss = 0
+
+    acc_arm_loc_loss = 0
+    acc_arm_conf_loss = 0
+    acc_odm_loc_loss = 0
+    acc_odm_conf_loss = 0
+    acc_loss = 0
+
+    # loc_loss = 0
+    # conf_loss = 0
     epoch = 0
     logger.info('Loading the dataset...')
 
     epoch_size = len(dataset) // args.batch_size
-    logger.info('Training SSD on: {}'.format(dataset.name))
+    logger.info('Training RefineDet on: {}'.format(dataset.name))
     logger.info('Using the specified args:')
     logger.info(args)
 
@@ -174,10 +202,12 @@ def train():
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
-    # create batch iterator
-    loss_acc_sum = 0.0
-    loss_acc_loc = 0.0
-    loss_acc_cls = 0.0
+    # # create batch iterator
+    # loss_acc_sum = 0.0
+    # loss_acc_loc = 0.0
+    # loss_acc_cls = 0.0
+
+
 
     batch_iterator = iter(data_loader)
     for iteration in range(args.start_iter, cfg['max_iter']):
@@ -186,13 +216,18 @@ def train():
             # load train data
             images, targets = next(batch_iterator)
 
-        except Exception:
+        except StopIteration:
 
             batch_iterator = iter(data_loader)
+            images, targets = next(batch_iterator)
             
             # reset epoch loss counters
-            loc_loss = 0
-            conf_loss = 0
+            # loc_loss = 0
+            # conf_loss = 0
+            arm_loc_loss = 0
+            arm_conf_loss = 0
+            odm_loc_loss = 0
+            odm_conf_loss = 0
             epoch += 1
 
         if iteration in cfg['lr_steps']:
@@ -208,32 +243,53 @@ def train():
         out = net(images)
         # backprop
         optimizer.zero_grad()
-        loss_l, loss_c = criterion(out, targets)
-        loss = loss_l + loss_c
+        arm_loss_l, arm_loss_c = arm_criterion(out, targets)
+        odm_loss_l, odm_loss_c = odm_criterion(out, targets)
+        #input()
+        arm_loss = arm_loss_l + arm_loss_c
+        odm_loss = odm_loss_l + odm_loss_c
+        loss = arm_loss + odm_loss
         loss.backward()
         optimizer.step()
         t1 = time.time()
-        loc_loss += loss_l.item()
-        conf_loss += loss_c.item()
+        arm_loc_loss += arm_loss_l.item()
+        arm_conf_loss += arm_loss_c.item()
+        odm_loc_loss += odm_loss_l.item()
+        odm_conf_loss += odm_loss_c.item()
 
-        loss_acc_sum += loss.item()
-        loss_acc_loc += loss_l.item()
-        loss_acc_cls += loss_c.item()
+        acc_arm_loc_loss += arm_loss_l.item()
+        acc_arm_conf_loss += arm_loss_c.item()
+        acc_odm_loc_loss += odm_loss_l.item()
+        acc_odm_conf_loss += odm_loss_c.item()
+        acc_loss += loss.item()
 
         if (iteration+1) % 10 == 0:
             logger.info('timer: %.4f sec.' % (t1 - t0))
-            logger.info('iter ' + repr(iteration) + ' || Loss: %.4f = %.4f (loc) + %.4f (cls)' % (loss_acc_sum/10.0, loss_acc_loc/10.0, loss_acc_cls/10.0))
+            logger.info('iter ' + repr(iteration) + ' || ARM_L Loss: %.4f ARM_C Loss: %.4f ODM_L Loss: %.4f ODM_C Loss: %.4f ||' \
+                % (acc_arm_loc_loss/10.0, acc_arm_conf_loss/10.0, acc_odm_loc_loss/10.0, acc_odm_conf_loss/10.0))
 
-            writer.add_scalars('loss', {'sum': loss_acc_sum/10.0, 'loc': loss_acc_loc/10.0, 'cls': loss_acc_cls/10.0}, iteration )
-            loss_acc_sum = 0.0
-            loss_acc_loc = 0.0
-            loss_acc_cls = 0.0
+            writer.add_scalars('loss', {'sum': acc_loss/10.0, \
+                'arm_loc': acc_arm_loc_loss/10.0, 'arm_cls': acc_arm_conf_loss/10.0, \
+                'odm_loc': acc_odm_loc_loss/10.0, 'odm_cls': acc_odm_conf_loss/10.0, \
+                }, iteration )
+
+            acc_arm_loc_loss = 0
+            acc_arm_conf_loss = 0
+            acc_odm_loc_loss = 0
+            acc_odm_conf_loss = 0
+            acc_loss = 0
+            # logger.info('iter ' + repr(iteration) + ' || Loss: %.4f = %.4f (loc) + %.4f (cls)' % (loss_acc_sum/10.0, loss_acc_loc/10.0, loss_acc_cls/10.0))
+
+            # writer.add_scalars('loss', {'sum': loss_acc_sum/10.0, 'loc': loss_acc_loc/10.0, 'cls': loss_acc_cls/10.0}, iteration )
+            # loss_acc_sum = 0.0
+            # loss_acc_loc = 0.0
+            # loss_acc_cls = 0.0
 
         if iteration != 0 and iteration % 5000 == 0:
-            logger.info('Saving state, iter:', iteration)
-            torch.save(ssd_net.state_dict(), os.path.join( jobs_dir, 'ssd300_{:s}_iter_{:06d}.pth'.format(args.dataset, iteration)))
+            logger.info('Saving state, iter: {:}'.format(iteration))
+            torch.save(refinedet_net.state_dict(), os.path.join( jobs_dir, 'refinedet_{:s}_iter_{:06d}.pth'.format(args.dataset, iteration)))
 
-    torch.save(ssd_net.state_dict(), os.path.join(jobs_dir, 'ssd300_{:s}_iter_{:06d}_final.pth'.format(args.dataset, iteration )))
+    torch.save(refinedet_net.state_dict(), os.path.join(jobs_dir, 'refinedet_{:s}_iter_{:06d}_final.pth'.format(args.dataset, iteration )))
 
 
 def adjust_learning_rate(optimizer, gamma, step):
@@ -247,14 +303,15 @@ def adjust_learning_rate(optimizer, gamma, step):
         param_group['lr'] = lr
 
 
-def xavier(param):
-    init.xavier_uniform(param)
-
-
 def weights_init(m):
     if isinstance(m, nn.Conv2d):
-        xavier(m.weight.data)
-        m.bias.data.zero_()
+        init.xavier_uniform_(m.weight.data)
+        if m.bias is not None:
+            m.bias.data.zero_()
+    elif isinstance(m, nn.ConvTranspose2d):
+        init.xavier_uniform_(m.weight.data)
+        if m.bias is not None:
+            m.bias.data.zero_()
 
 if __name__ == '__main__':
     train()

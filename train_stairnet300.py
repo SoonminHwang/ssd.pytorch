@@ -191,6 +191,7 @@ def train():
         except Exception:
 
             batch_iterator = iter(data_loader)
+            images, targets = next(batch_iterator)
             
             # reset epoch loss counters
             loc_loss = 0
