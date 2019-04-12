@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
-from layers import *
-from data import voc, coco, ssd512_voc
+# from layers import *
+from layers.functions import Detect_AnchorFree
+from layers.modules import L2Norm
+# from data import voc, coco, voc_ssd_anchor_free
+from data import coco, voc_ssd_anchor_free as voc
 import os
-
+import numpy as np
+from itertools import product as product
 
 class SSD(nn.Module):
     """Single Shot Multibox Architecture
@@ -29,18 +32,17 @@ class SSD(nn.Module):
         self.phase = phase
         self.num_classes = num_classes
         if num_classes == 21:
-            if size == 300:
-                self.cfg = voc
-            elif size == 512:
-                self.cfg = ssd512_voc
-            else:
-                raise NotImplementedError
+        	self.cfg = voc[str(size)]            
         else:
             self.cfg = coco
         # self.cfg = (coco, voc)[num_classes == 21]
-        self.priorbox = PriorBox(self.cfg)
+        # self.priorbox = PriorBox(self.cfg)
         #self.priors = Variable(self.priorbox.forward(), volatile=True)
-        self.priors = self.priorbox.forward().float().cuda()
+        # self.priors = self.priorbox.forward().float().cuda()
+        # self.priors_xy = self.priorbox.forward().float()[:,:2].cuda()	## Use only xy-coordinates
+
+        image_size, feature_maps, steps, clip = self.cfg['min_dim'], self.cfg['feature_maps'], self.cfg['steps'], self.cfg['clip']
+        self.priors_xy = self.get_prior_position(image_size, feature_maps, steps, clip).float().cuda()
         self.size = size
 
         # SSD network
@@ -49,15 +51,57 @@ class SSD(nn.Module):
         self.L2Norm = L2Norm(512, 20)
         self.extras = nn.ModuleList(extras)
 
-        self.loc = nn.ModuleList(head[0])
-        self.conf = nn.ModuleList(head[1])
+        ## Limit maximum scale depending on the level
+        # self.ref_vec = torch.linspace(0,1,11,requires_grad=False).float().unsqueeze(0).cuda()
+        self.ref_vec = torch.linspace(0,1,self.cfg['num_anchor_bins'],requires_grad=False).float().unsqueeze(0).cuda()
+        ref_scales_mul = torch.ones( (self.priors_xy.size(0), 1), dtype=torch.float, requires_grad=False).cuda()
+        ref_scales_add = torch.ones( (self.priors_xy.size(0), 1), dtype=torch.float, requires_grad=False).cuda()
+
+        # nAnchors = [ b*f*f for b, f in zip(mbox[str(size)], self.cfg['feature_maps']) ]
+        nAnchors = np.cumsum( [0] + [ f*f for f in self.cfg['feature_maps'] ] )        
+        # max_scales = [ float(sz) / self.cfg['min_dim'] for sz in self.cfg['max_sizes'] ]
+
+        for ii in range(len(nAnchors)-1):
+            maxv, minv = float(self.cfg['max_sizes'][ii]), float(self.cfg['min_sizes'][ii])
+            # ref_scales_mul[nAnchors[ii]:nAnchors[ii+1]] = (maxv - minv) / float(self.cfg['min_dim'])
+            # ref_scales_add[nAnchors[ii]:nAnchors[ii+1]] = minv / float(self.cfg['min_dim'])
+            
+            ref_scales_mul[nAnchors[ii]:nAnchors[ii+1]] = 1.
+            ref_scales_add[nAnchors[ii]:nAnchors[ii+1]] = 0.
+
+            # ref_scales_mul[nAnchors[ii]:nAnchors[ii+1]] = .8
+            # ref_scales_add[nAnchors[ii]:nAnchors[ii+1]] = .1
+
+        # Broadcasting
+        self.ref_vec = self.ref_vec * ref_scales_mul + ref_scales_add
+        # self.ref_vec.unsqueeze_(0)
+
+        self.prior = nn.ModuleList(head[0])
+        self.loc = nn.ModuleList(head[1])
+        self.conf = nn.ModuleList(head[2])
 
         if phase == 'test':
             self.softmax = nn.Softmax(dim=-1)
-            self.detect = Detect(num_classes, 0, 200, 0.01, 0.45)
+            self.detect = Detect_AnchorFree(self.cfg, num_classes, 0, 200, 0.01, 0.45, self.ref_vec)
 
     def __str__(self):
         return __class__.__name__ + str(self.size)
+
+    def get_prior_position(self, image_size, feature_maps, steps, clip=True):
+        mean = []
+        for k, f in enumerate(feature_maps):
+            for i, j in product(range(f), repeat=2):
+                f_k = image_size / steps[k]
+                # unit center x,y
+                cx = (j + 0.5) / f_k
+                cy = (i + 0.5) / f_k                
+                mean += [cx, cy]
+
+        # back to torch land
+        output = torch.Tensor(mean).view(-1, 2)
+        if clip:
+            output.clamp_(max=1, min=0)
+        return output
 
     def forward(self, x):
         """Applies network layers and ops on input image(s) x.
@@ -79,8 +123,15 @@ class SSD(nn.Module):
                     3: priorbox layers, Shape: [2,num_priors*4]
         """
         sources = list()
+        prior = list()
         loc = list()
         conf = list()
+
+        if self.priors_xy.size(0) != x.size(0):
+        	self.priors_xy = self.priors_xy.unsqueeze(0).repeat(x.size(0), 1, 1)
+
+        device = x.get_device()
+        self.priors_xy = self.priors_xy.to(device)
 
         # apply vgg up to conv4_3 relu
         for k in range(23):
@@ -101,26 +152,25 @@ class SSD(nn.Module):
                 sources.append(x)
 
         # apply multibox head to source layers
-        for (x, l, c) in zip(sources, self.loc, self.conf):
+        for (x, p, l, c) in zip(sources, self.prior, self.loc, self.conf):
+            prior.append(p(x).permute(0, 2, 3, 1).contiguous())
             loc.append(l(x).permute(0, 2, 3, 1).contiguous())
-            conf.append(c(x).permute(0, 2, 3, 1).contiguous())
+            conf.append(c(x).permute(0, 2, 3, 1).contiguous())        
+        
+        loc = torch.cat([o.view(o.size(0), -1, 4) for o in loc], 1)
+        conf = torch.cat([o.view(o.size(0), -1, self.num_classes) for o in conf], 1)
+        priors_wh = torch.cat([o.view(o.size(0), -1, 2*self.cfg['num_anchor_bins']) for o in prior], 1)        
+        priors = torch.cat([self.priors_xy, priors_wh], dim=2)
 
-        loc = torch.cat([o.view(o.size(0), -1) for o in loc], 1)
-        conf = torch.cat([o.view(o.size(0), -1) for o in conf], 1)
         if self.phase == "test":
             output = self.detect(
-                loc.view(loc.size(0), -1, 4),                   # loc preds
-                self.softmax(conf.view(conf.size(0), -1,
-                             self.num_classes)),                # conf preds
-                self.priors.type(type(x.data))                  # default boxes
+                loc, 
+                self.softmax(conf), 
+                priors.type(type(x.data)),            	
             ).data
         else:
-            output = (
-                loc.view(loc.size(0), -1, 4),
-                conf.view(conf.size(0), -1, self.num_classes),
-                self.priors
-            )
-
+            output = (loc, conf, priors)
+        
         return output
 
     def load_weights(self, base_file):
@@ -180,38 +230,41 @@ def add_extras(cfg, size, i, batch_norm=False):
     return layers
 
 
-def multibox(vgg, extra_layers, cfg, num_classes):
+def multibox(vgg, extra_layers, num_classes, num_anchor_bins):
+    prior_layers = []
     loc_layers = []
     conf_layers = []
     vgg_source = [21, -2]
     # vgg_source = [24, -2] ??
     for k, v in enumerate(vgg_source):
-        loc_layers += [nn.Conv2d(vgg[v].out_channels,
-                                 cfg[k] * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(vgg[v].out_channels,
-                        cfg[k] * num_classes, kernel_size=3, padding=1)]
+        prior_layers += [nn.Conv2d(vgg[v].out_channels, 2*num_anchor_bins, kernel_size=3, padding=1)]
+        loc_layers += [nn.Conv2d(vgg[v].out_channels, 4, kernel_size=3, padding=1)]
+        conf_layers += [nn.Conv2d(vgg[v].out_channels, num_classes, kernel_size=3, padding=1)]
     for k, v in enumerate(extra_layers[1::2], 2):
-        loc_layers += [nn.Conv2d(v.out_channels, cfg[k]
-                                 * 4, kernel_size=3, padding=1)]
-        conf_layers += [nn.Conv2d(v.out_channels, cfg[k]
-                                  * num_classes, kernel_size=3, padding=1)]
-    return vgg, extra_layers, (loc_layers, conf_layers)
+        prior_layers += [nn.Conv2d(v.out_channels, 2*num_anchor_bins, kernel_size=3, padding=1)]
+        loc_layers += [nn.Conv2d(v.out_channels, 4, kernel_size=3, padding=1)]
+        conf_layers += [nn.Conv2d(v.out_channels, num_classes, kernel_size=3, padding=1)]
+    return vgg, extra_layers, (prior_layers, loc_layers, conf_layers)
 
 
 base = {
     '300': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
+            512, 512, 512],
+    '320': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
             512, 512, 512],
     '512': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'C', 512, 512, 512, 'M',
             512, 512, 512],
 }
 extras = {
     '300': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
+    '320': [256, 'S', 512, 128, 'S', 256, 128, 256, 128, 256],
     '512': [256, 'S', 512, 128, 'S', 256, 128, 'S', 256, 128, 'S', 256, 128],
 }
-mbox = {
-    '300': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
-    '512': [4, 6, 6, 6, 6, 4, 4],
-}
+# mbox = {
+#     '300': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
+#     '320': [4, 6, 6, 6, 4, 4],  # number of boxes per feature map location
+#     '512': [4, 6, 6, 6, 6, 4, 4],
+# }
 
 
 def build_ssd(phase, size=300, num_classes=21):
@@ -222,7 +275,9 @@ def build_ssd(phase, size=300, num_classes=21):
     #     print("ERROR: You specified size " + repr(size) + ". However, " +
     #           "currently only SSD300 (size=300) is supported!")
     #     return
+    cfg = (coco, voc)[num_classes == 21][str(size)]
+
     base_, extras_, head_ = multibox(vgg(base[str(size)], 3),
                                      add_extras(extras[str(size)], size, 1024),
-                                     mbox[str(size)], num_classes)
+                                     num_classes, cfg['num_anchor_bins'])
     return SSD(phase, size, base_, extras_, head_, num_classes)

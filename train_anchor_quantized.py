@@ -1,10 +1,8 @@
 from data import *
 from utils.augmentations import SSDAugmentation
-# from layers.modules import MultiBoxLoss_PredictedAnchor as MultiBoxLoss
-from layers.modules import MultiBoxLoss
+from layers.modules import MultiBoxLoss_PredictedAnchor as MultiBoxLoss
 # from models.stairnet import build_stairnet
-# from models.ssd_multiscale_anchor_quantization import build_ssd
-from models.ssd import build_ssd
+from models.ssd_multiscale_anchor_quantization import build_ssd
 import os
 import sys
 import time
@@ -17,7 +15,7 @@ import torch.nn.init as init
 import torch.utils.data as data
 import numpy as np
 import argparse
-
+import pprint
 
 def str2bool(v):
     return v.lower() in ("yes", "true", "t", "1")
@@ -53,6 +51,8 @@ parser.add_argument('--weight_decay', default=5e-4, type=float,
 parser.add_argument('--gamma', default=0.1, type=float,
                     help='Gamma update for SGD')
 
+parser.add_argument('--alpha', default=1e-1, type=float,
+                    help='Weight for prior loss')
 parser.add_argument('--exp_name', default=None,
                     help='Specify experiment name')
 parser.add_argument('--port', default=8821, type=int,
@@ -76,8 +76,11 @@ if not os.path.exists(tensorboard_dir):     os.makedirs(tensorboard_dir)
 
 import tarfile, glob
 tar = tarfile.open( os.path.join(jobs_dir, 'sources.tar'), 'w' )
-for file in glob.glob('*.py'):
+for file in glob.glob('*.py') + glob.glob('data/*.py'):
     tar.add( file )
+tar.add( 'layers' )
+tar.add( 'models' )
+tar.add( 'utils' )
 tar.close()
 
 
@@ -124,37 +127,51 @@ def train():
     net = ssd_net
 
     if args.cuda:
-        # net = torch.nn.DataParallel(ssd_net)
-        net = ssd_net
+        net = torch.nn.DataParallel(ssd_net)
+        # net = ssd_net
         cudnn.benchmark = True
 
     if args.resume:
-        print('Resuming training, loading {}...'.format(args.resume))
+        logger.info('Resuming training, loading {}...'.format(args.resume))
         ssd_net.load_weights(args.resume)
     else:
         vgg_weights = torch.load('weights/' + args.basenet)
-        print('Loading base network...')
+        logger.info('Loading base network...')
         ssd_net.vgg.load_state_dict(vgg_weights)
 
     if args.cuda:
         net = net.cuda()
 
     if not args.resume:
-        print('Initializing weights...')
+        logger.info('Initializing weights...')
         # initialize newly added layers' weights with xavier method
         # ssd_net.topdown.apply(weights_init)
         ssd_net.extras.apply(weights_init)
-        # ssd_net.prior.apply(weights_init)
+        ssd_net.prior.apply(weights_init)
         ssd_net.loc.apply(weights_init)
         ssd_net.conf.apply(weights_init)
 
-    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum,
-                          weight_decay=args.weight_decay)
-    criterion = MultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5,
-                             False, args.cuda)
+    nBins = int(ssd_net.prior[0].bias.size(0)/2)
+    scale_prior = torch.zeros( (len(ssd_net.prior), nBins) ).cuda()
+    
+    scale_prior[0, int(nBins*0.15)] = 5.
+    scale_prior[1, int(nBins*0.30)] = 5.
+    scale_prior[2, int(nBins*0.45)] = 5.
+    scale_prior[3, int(nBins*0.60)] = 5.
+    scale_prior[4, int(nBins*0.75)] = 5.
+    scale_prior[5, int(nBins*0.90)] = 5.
+
+
+    # for ii in range(len(ssd_net.prior)):
+    #     ssd_net.prior[ii].bias.data = torch.cat( [scale_prior[ii], scale_prior[ii]], 0 ).clone()
+        
+    optimizer = optim.SGD(net.parameters(), lr=args.lr, momentum=args.momentum, weight_decay=args.weight_decay)
+    criterion = MultiBoxLoss(cfg['num_classes'], 0.5, True, 0, True, 3, 0.5, False, ssd_net.ref_vec, args.cuda)
+    # criterion = MultiBoxLoss(cfg['num_classes'], 0.6, True, 0, True, 3, 0.5, False, ssd_net.ref_vec, args.cuda)
 
     net.train()
     # loss counters
+    prior_loss = 0
     loc_loss = 0
     conf_loss = 0
     epoch = 0
@@ -163,7 +180,8 @@ def train():
     epoch_size = len(dataset) // args.batch_size
     logger.info('Training SSD on: {}'.format(dataset.name))
     logger.info('Using the specified args:')
-    logger.info(args)
+    # logger.info( pprint.pformat(args) )
+    logger.info( args )
 
     step_index = 0
 
@@ -171,14 +189,14 @@ def train():
                                   num_workers=args.num_workers,
                                   shuffle=True, collate_fn=detection_collate,
                                   pin_memory=True)
+    # create batch iterator
+    loss_acc_sum = 0.0
+    loss_acc_pri = 0.0
+    loss_acc_loc = 0.0
+    loss_acc_cls = 0.0
 
     num_pos = 0.
     num_neg = 0.
-
-    # create batch iterator
-    loss_acc_sum = 0.0
-    loss_acc_loc = 0.0
-    loss_acc_cls = 0.0
 
     batch_iterator = iter(data_loader)
     for iteration in range(args.start_iter, cfg['max_iter']):
@@ -210,33 +228,50 @@ def train():
         out = net(images)
         # backprop
         optimizer.zero_grad()
-        loss_l, loss_c = criterion(out, targets)
-        loss = loss_l + loss_c
+        loss_p, loss_l, loss_c = criterion(out, targets)
+        loss_p = args.alpha * loss_p
+        loss = loss_l + loss_c + loss_p
+
+        if torch.isnan(loss) or torch.isinf(loss):
+            import pdb
+            pdb.set_trace()
+
+            criterion(out, targets)
+
+
         loss.backward()
         optimizer.step()
         t1 = time.time()
+
+        num_pos += criterion.num_pos.item()
+        num_neg += criterion.num_neg.item()
+
+        prior_loss += loss_p.item()
         loc_loss += loss_l.item()
         conf_loss += loss_c.item()
 
-        num_pos += criterion.num_pos
-        num_neg += criterion.num_neg
-
         loss_acc_sum += loss.item()
+        loss_acc_pri += loss_p.item()
         loss_acc_loc += loss_l.item()
         loss_acc_cls += loss_c.item()
 
         if (iteration+1) % 10 == 0:
+            import pdb
+            pdb.set_trace()
+            
             logger.info('timer: %.4f sec.' % (t1 - t0))
-            logger.info('iter ' + repr(iteration) + ' || Loss: %.4f = %.4f (loc) + %.4f (cls) || Pos: %3.2f, Neg: %3.2f' 
-                % (loss_acc_sum/10.0, loss_acc_loc/10.0, loss_acc_cls/10.0, num_pos/10.0, num_neg/10.0))
+            logger.info('iter %6d || Loss: %.4f = %.4f (prior) + %.4f (loc) + %.4f (cls) || Pos: %3d, Neg: %3d' 
+                % (iteration, loss_acc_sum/10.0, loss_acc_pri/10.0, loss_acc_loc/10.0, loss_acc_cls/10.0, num_pos/10.0, num_neg/10.0))
 
-            writer.add_scalars('loss', {'sum': loss_acc_sum/10.0, 'loc': loss_acc_loc/10.0, 'cls': loss_acc_cls/10.0}, iteration )
+            writer.add_scalars('loss', {'sum': loss_acc_sum/10.0, 'prior': loss_acc_pri/10.0, 'loc': loss_acc_loc/10.0, 'cls': loss_acc_cls/10.0}, iteration )
+            writer.add_scalars('loss_p', {'prior': loss_acc_pri/10.0}, iteration )
             writer.add_scalars('Num samples', {'pos': num_pos/10.0, 'neg': num_neg/10.0}, iteration )
 
             num_pos = 0.
             num_neg = 0.
 
             loss_acc_sum = 0.0
+            loss_acc_pri = 0.0
             loss_acc_loc = 0.0
             loss_acc_cls = 0.0
 
@@ -260,7 +295,7 @@ def adjust_learning_rate(optimizer, gamma, step):
 
 def weights_init(m):
     if isinstance(m, nn.Conv2d):
-        init.xavier_uniform(m.weight.data)
+        init.xavier_uniform_(m.weight.data)
         if m.bias is not None:
             m.bias.data.zero_()
 

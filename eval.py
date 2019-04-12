@@ -15,6 +15,7 @@ import torch.utils.data as data
 
 from ssd import build_ssd
 from models import build_ssd, build_ssd_19x19, build_stairnet, build_stairnet_38x38, build_refinedet
+from models.ssd_multiscale_anchor_quantization import build_ssd as build_quantized
 
 import sys
 import os
@@ -70,7 +71,7 @@ parser.add_argument('--confidence_threshold', default=0.01, type=float,
                     help='Detection confidence threshold')
 parser.add_argument('--top_k', default=5, type=int,
                     help='Further restrict the number of predictions to parse')
-parser.add_argument('--input_size', default=300, type=int,
+parser.add_argument('--input_size', default=320, type=int,
                     help='Size of the input image')
 # parser.add_argument('--cuda', default=True, type=str2bool,
 #                     help='Use cuda to train model')
@@ -84,7 +85,9 @@ parser.add_argument('--batch_size', default=8, type=int,
                     help='Further restrict the number of predictions to parse')
 parser.add_argument('--set_type', default='test', type=str, choices=['test', 'val', 'train'],
                     help='Specify subset type to evaluate')
-parser.add_argument('--net_type', default='ssd', type=str,
+parser.add_argument('--net_type', default='ssd', type=str, 
+                    choices=['ssd', 'ssd_19x19', 'ssd_19x19_resolx2', 'ssd_19x19_extraConv', 'ssd_38x38', \
+                            'stairnet', 'stairnet_38x38', 'refinedet', 'ssd_anchor_free'],
                     help='Specify subset type to evaluate')
 
 args = parser.parse_args()
@@ -423,6 +426,8 @@ def test_net(net, cuda, dataloader, transform, top_k, num_images,
     output_dir = get_output_dir(jobs_dir, args.set_type + '_' + os.path.basename(net_file).rstrip('.pth'))
     det_file = os.path.join(output_dir, 'detections.pkl')
 
+    net.detect.conf_thresh = thresh
+
     # all detections are collected into:
     #    all_boxes[cls][image] = N x 5 array of detections in
     #    (x1, y1, x2, y2, score)
@@ -506,6 +511,9 @@ if __name__ == '__main__':
         net = build_stairnet_38x38('test', args.input_size, num_classes)
     elif args.net_type.lower() == 'refinedet':
         net = build_refinedet('test', args.input_size, num_classes)
+    elif args.net_type.lower() == 'ssd_anchor_free':
+        net = build_quantized('test', args.input_size, num_classes)
+
     else:
         raise NotImplementedError
 

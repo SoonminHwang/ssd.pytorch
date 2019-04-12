@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import torch
-
+import torch.nn.functional as F
 
 def point_form(boxes):
     """ Convert prior_boxes to (xmin, ymin, xmax, ymax)
@@ -118,6 +118,77 @@ def refine_match(threshold, truths, priors, variances, labels, loc_t, conf_t, id
     loc_t[idx] = loc    # [num_priors,4] encoded offsets to learn
     conf_t[idx] = conf  # [num_priors] top class label for each prior
 
+def match_predicted_anchor(threshold, truths, priors, variances, labels, loc_t, conf_t, ref_vec):
+    """Match each prior box with the ground truth box of the highest jaccard
+    overlap, encode the bounding boxes, then return the matched indices
+    corresponding to both confidence and location preds.
+    Args:
+        threshold: (float) The overlap threshold used when mathing boxes.
+        truths: (tensor) Ground truth boxes, Shape: [num_obj, num_priors].
+        priors: (tensor) Prior boxes from priorbox layers, Shape: [n_priors,4].
+        variances: (tensor) Variances corresponding to each prior coord,
+            Shape: [num_priors, 4].
+        labels: (tensor) All the class labels for the image, Shape: [num_obj].
+        loc_t: (tensor) Tensor to be filled w/ endcoded location targets.
+        conf_t: (tensor) Tensor to be filled w/ matched indices for conf preds.
+        idx: (int) current batch index
+    Return:
+        The matched indices corresponding to 1)location and 2)confidence preds.
+    """
+
+    # reconstruct priors from prediction
+    prior_w, prior_h = priors[:,2:].split(ref_vec.size(1), dim=1)    
+    prior_w = (F.softmax(prior_w, dim=1) * ref_vec).sum(1, keepdim=True)
+    prior_h = (F.softmax(prior_h, dim=1) * ref_vec).sum(1, keepdim=True)
+    predicted_priors = torch.cat([priors[:,:2], prior_w, prior_h], dim=1)
+
+    # jaccard index
+    overlaps = jaccard(
+        truths,
+        point_form(predicted_priors)
+    )
+    # (Bipartite Matching)
+    # [1,num_objects] best prior for each ground truth
+    best_prior_overlap, best_prior_idx = overlaps.max(1, keepdim=True)
+    # [1,num_priors] best ground truth for each prior
+    best_truth_overlap, best_truth_idx = overlaps.max(0, keepdim=True)
+    best_truth_idx.squeeze_(0)
+    best_truth_overlap.squeeze_(0)
+    best_prior_idx.squeeze_(1)
+    best_prior_overlap.squeeze_(1)
+    best_truth_overlap.index_fill_(0, best_prior_idx, 2)  # ensure best prior
+    # TODO refactor: index  best_prior_idx with long tensor
+    # ensure every gt matches with its prior of max overlap
+    for j in range(best_prior_idx.size(0)):
+        best_truth_idx[best_prior_idx[j]] = j
+    matches = truths[best_truth_idx]          # Shape: [num_priors,4]
+
+    # encode ground truth to train prior prediction
+    prior_w_target, prior_h_target = encode_predicted_anchor(matches, ref_vec)    
+    loc = encode(matches, predicted_priors, variances)
+
+    conf = labels[best_truth_idx] + 1         # Shape: [num_priors]
+    conf[best_truth_overlap < threshold] = 0  # label as background
+    
+    # loc_t[idx] = loc    # [num_priors,4] encoded offsets to learn
+    # conf_t[idx] = conf  # [num_priors] top class label for each prior
+
+    return prior_w_target, prior_h_target, loc, conf
+
+
+def encode_predicted_anchor(matched, ref_vec):
+    p_wh = (matched[:, 2:] - matched[:, :2])
+
+    def convert_to_TPM(x):
+        diff = x - ref_vec      ## broadcasting: [numAnchor x 1] - [numAnchor x 11]
+        e = diff.pow(2).mul(-1).div(0.1).exp()      ## div 0.1
+        converted_x = e / e.sum(1, keepdim=True)        
+        return converted_x
+
+    p_w = convert_to_TPM(p_wh[:,0:1])
+    p_h = convert_to_TPM(p_wh[:,1:2])
+
+    return p_w, p_h
 
 def match(threshold, truths, priors, variances, labels, loc_t, conf_t, idx):
     """Match each prior box with the ground truth box of the highest jaccard
@@ -207,7 +278,6 @@ def decode(loc, priors, variances):
     boxes[:, :2] -= boxes[:, 2:] / 2
     boxes[:, 2:] += boxes[:, :2]
     return boxes
-
 
 def log_sum_exp(x):
     """Utility function for computing log_sum_exp while determining
